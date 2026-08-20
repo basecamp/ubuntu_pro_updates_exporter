@@ -112,12 +112,12 @@ attached.
 ## Running
 
 ```sh
-./ubuntu-pro-updates-exporter --web.listen-address=:9924 --web.telemetry-path=/metrics
+./ubuntu-pro-updates-exporter --web.listen-address=:10052 --web.telemetry-path=/metrics
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--web.listen-address` | `:9924` | Address to expose metrics on |
+| `--web.listen-address` | `:10052` | Address to expose metrics on |
 | `--web.telemetry-path` | `/metrics` | Metrics path |
 | `--pro.binary` | `pro` | Ubuntu Pro client executable |
 | `--pro.timeout` | `30s` | Timeout per `pro api` invocation |
@@ -135,7 +135,7 @@ scrape_configs:
   - job_name: ubuntu_pro_updates
     scrape_interval: 1m
     static_configs:
-      - targets: ["myhost:9924"]
+      - targets: ["myhost:10052"]
 ```
 
 The exporter needs no root privileges, so run it as an unprivileged user.
@@ -143,8 +143,8 @@ When running without a home directory (for example with systemd
 `DynamicUser=yes`), point `$HOME` at a writable directory, because the pro
 client writes a per-user log under `$HOME/.cache` when invoked unprivileged.
 
-Note that port 9924 is not registered in the
-[Prometheus default port allocations](https://github.com/prometheus/docs/blob/main/docs/instrumenting/exporters.md).
+Port 10052 is the port registered for this exporter in the
+[Prometheus default port allocations](https://github.com/prometheus/prometheus/wiki/Default-port-allocations).
 
 ## Design notes
 

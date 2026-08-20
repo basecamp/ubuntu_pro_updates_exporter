@@ -39,7 +39,7 @@ func main() {
 
 func run() int {
 	var (
-		listenAddress = flag.String("web.listen-address", ":9924",
+		listenAddress = flag.String("web.listen-address", ":10052",
 			"Address on which to expose metrics.")
 		metricsPath = flag.String("web.telemetry-path", "/metrics",
 			"Path under which to expose metrics.")
