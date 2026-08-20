@@ -1,0 +1,64 @@
+{
+  "_schema_version": "v1",
+  "data": {
+    "attributes": {
+      "summary": {
+        "num_esm_apps_updates": 5,
+        "num_esm_infra_updates": 0,
+        "num_standard_security_updates": 57,
+        "num_standard_updates": 23,
+        "num_updates": 85
+      },
+      "updates": [
+        {
+          "download_size": 516096,
+          "origin": "esm.ubuntu.com",
+          "package": "distro-info-data",
+          "provided_by": "esm-apps",
+          "status": "pending_attach",
+          "version": "0.52ubuntu0.9+esm1"
+        },
+        {
+          "download_size": 1262048,
+          "origin": "archive.ubuntu.com",
+          "package": "openssl",
+          "provided_by": "standard-security",
+          "status": "upgrade_available",
+          "version": "3.0.2-0ubuntu1.18"
+        },
+        {
+          "download_size": 44160,
+          "origin": "archive.ubuntu.com",
+          "package": "rsync",
+          "provided_by": "standard-updates",
+          "status": "upgrade_available",
+          "version": "3.2.7-0ubuntu0.22.04.2"
+        },
+        {
+          "download_size": 12800,
+          "origin": "archive.ubuntu.com",
+          "package": "tzdata",
+          "provided_by": "standard-updates",
+          "status": "upgrade_available_not_preferred",
+          "version": "2024a-0ubuntu0.22.04.1"
+        },
+        {
+          "download_size": 2048000,
+          "origin": "esm.ubuntu.com",
+          "package": "imagemagick",
+          "provided_by": "esm-apps",
+          "status": "pending_attach",
+          "version": "8:6.9.11.60+dfsg-1.3ubuntu0.22.04.5+esm1"
+        }
+      ]
+    },
+    "meta": {
+      "environment_vars": []
+    },
+    "type": "PackageUpdates"
+  },
+  "errors": [],
+  "result": "success",
+  "version": "35.1~22.04",
+  "warnings": []
+}

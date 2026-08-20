@@ -1,0 +1,18 @@
+{
+  "_schema_version": "v1",
+  "data": {
+    "meta": {
+      "environment_vars": []
+    }
+  },
+  "errors": [
+    {
+      "code": "api-invalid-endpoint",
+      "meta": {},
+      "title": "'u.pro.packages.updatez.v1' is not a valid endpoint"
+    }
+  ],
+  "result": "failure",
+  "version": "35.1~22.04",
+  "warnings": []
+}
