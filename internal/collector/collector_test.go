@@ -62,18 +62,18 @@ func newTestCollector(client proclient.Client) *Collector {
 }
 
 const allFamiliesAbsentExceptUp = `
-# HELP ubuntu_pro_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
-# TYPE ubuntu_pro_up gauge
-ubuntu_pro_up 0
+# HELP ubuntu_pro_updates_exporter_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
+# TYPE ubuntu_pro_updates_exporter_up gauge
+ubuntu_pro_updates_exporter_up 0
 `
 
 var allFamilyNames = []string{
-	"ubuntu_pro_up",
+	"ubuntu_pro_updates_exporter_up",
 	"ubuntu_pro_updates_pending",
 	"ubuntu_pro_updates_download_bytes",
-	"ubuntu_pro_reboot_required",
-	"ubuntu_pro_last_success_timestamp_seconds",
-	"ubuntu_pro_query_duration_seconds",
+	"ubuntu_pro_updates_reboot_required",
+	"ubuntu_pro_updates_exporter_last_success_timestamp_seconds",
+	"ubuntu_pro_updates_exporter_query_duration_seconds",
 }
 
 func TestCollectBeforeFirstRefresh(t *testing.T) {
@@ -91,9 +91,9 @@ func TestCollectSuccess(t *testing.T) {
 	c.Refresh(context.Background())
 
 	expected := `
-# HELP ubuntu_pro_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
-# TYPE ubuntu_pro_up gauge
-ubuntu_pro_up 1
+# HELP ubuntu_pro_updates_exporter_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
+# TYPE ubuntu_pro_updates_exporter_up gauge
+ubuntu_pro_updates_exporter_up 1
 # HELP ubuntu_pro_updates_pending Number of pending package updates, by pocket and update status.
 # TYPE ubuntu_pro_updates_pending gauge
 ubuntu_pro_updates_pending{pocket="esm-apps",status="pending_attach"} 1
@@ -122,17 +122,17 @@ ubuntu_pro_updates_download_bytes{pocket="esm-apps"} 200
 ubuntu_pro_updates_download_bytes{pocket="esm-infra"} 0
 ubuntu_pro_updates_download_bytes{pocket="standard-security"} 150
 ubuntu_pro_updates_download_bytes{pocket="standard-updates"} 25
-# HELP ubuntu_pro_reboot_required Reboot-required state of the host; the active state has value 1. State yes-kernel-livepatches-applied means a reboot is pending but Livepatch covers the running kernel.
-# TYPE ubuntu_pro_reboot_required gauge
-ubuntu_pro_reboot_required{state="no"} 1
-ubuntu_pro_reboot_required{state="yes"} 0
-ubuntu_pro_reboot_required{state="yes-kernel-livepatches-applied"} 0
-# HELP ubuntu_pro_last_success_timestamp_seconds Unix time of the last successful package-updates refresh; absent until one succeeds.
-# TYPE ubuntu_pro_last_success_timestamp_seconds gauge
-ubuntu_pro_last_success_timestamp_seconds 1.7e+09
-# HELP ubuntu_pro_query_duration_seconds Time spent querying the Ubuntu Pro client during the last refresh.
-# TYPE ubuntu_pro_query_duration_seconds gauge
-ubuntu_pro_query_duration_seconds 0
+# HELP ubuntu_pro_updates_reboot_required Reboot-required state of the host; the active state has value 1. State yes-kernel-livepatches-applied means a reboot is pending but Livepatch covers the running kernel.
+# TYPE ubuntu_pro_updates_reboot_required gauge
+ubuntu_pro_updates_reboot_required{state="no"} 1
+ubuntu_pro_updates_reboot_required{state="yes"} 0
+ubuntu_pro_updates_reboot_required{state="yes-kernel-livepatches-applied"} 0
+# HELP ubuntu_pro_updates_exporter_last_success_timestamp_seconds Unix time of the last successful package-updates refresh; absent until one succeeds.
+# TYPE ubuntu_pro_updates_exporter_last_success_timestamp_seconds gauge
+ubuntu_pro_updates_exporter_last_success_timestamp_seconds 1.7e+09
+# HELP ubuntu_pro_updates_exporter_query_duration_seconds Time spent querying the Ubuntu Pro client during the last refresh.
+# TYPE ubuntu_pro_updates_exporter_query_duration_seconds gauge
+ubuntu_pro_updates_exporter_query_duration_seconds 0
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected), allFamilyNames...)
 	if err != nil {
@@ -147,12 +147,12 @@ func TestCollectProFailure(t *testing.T) {
 	// Both queries failed: up 0 and a duration; detail families and the
 	// never-succeeded timestamp must be absent.
 	expected := `
-# HELP ubuntu_pro_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
-# TYPE ubuntu_pro_up gauge
-ubuntu_pro_up 0
-# HELP ubuntu_pro_query_duration_seconds Time spent querying the Ubuntu Pro client during the last refresh.
-# TYPE ubuntu_pro_query_duration_seconds gauge
-ubuntu_pro_query_duration_seconds 0
+# HELP ubuntu_pro_updates_exporter_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
+# TYPE ubuntu_pro_updates_exporter_up gauge
+ubuntu_pro_updates_exporter_up 0
+# HELP ubuntu_pro_updates_exporter_query_duration_seconds Time spent querying the Ubuntu Pro client during the last refresh.
+# TYPE ubuntu_pro_updates_exporter_query_duration_seconds gauge
+ubuntu_pro_updates_exporter_query_duration_seconds 0
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected), allFamilyNames...)
 	if err != nil {
@@ -166,10 +166,10 @@ func TestLastSuccessSurvivesFailedRefresh(t *testing.T) {
 	c.Refresh(context.Background())
 
 	if err := testutil.CollectAndCompare(c, strings.NewReader(`
-# HELP ubuntu_pro_last_success_timestamp_seconds Unix time of the last successful package-updates refresh; absent until one succeeds.
-# TYPE ubuntu_pro_last_success_timestamp_seconds gauge
-ubuntu_pro_last_success_timestamp_seconds 1.7e+09
-`), "ubuntu_pro_last_success_timestamp_seconds"); err != nil {
+# HELP ubuntu_pro_updates_exporter_last_success_timestamp_seconds Unix time of the last successful package-updates refresh; absent until one succeeds.
+# TYPE ubuntu_pro_updates_exporter_last_success_timestamp_seconds gauge
+ubuntu_pro_updates_exporter_last_success_timestamp_seconds 1.7e+09
+`), "ubuntu_pro_updates_exporter_last_success_timestamp_seconds"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -179,13 +179,13 @@ ubuntu_pro_last_success_timestamp_seconds 1.7e+09
 	fake.updates = nil
 	c.Refresh(context.Background())
 	if err := testutil.CollectAndCompare(c, strings.NewReader(`
-# HELP ubuntu_pro_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
-# TYPE ubuntu_pro_up gauge
-ubuntu_pro_up 0
-# HELP ubuntu_pro_last_success_timestamp_seconds Unix time of the last successful package-updates refresh; absent until one succeeds.
-# TYPE ubuntu_pro_last_success_timestamp_seconds gauge
-ubuntu_pro_last_success_timestamp_seconds 1.7e+09
-`), "ubuntu_pro_up", "ubuntu_pro_last_success_timestamp_seconds", "ubuntu_pro_updates_pending"); err != nil {
+# HELP ubuntu_pro_updates_exporter_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
+# TYPE ubuntu_pro_updates_exporter_up gauge
+ubuntu_pro_updates_exporter_up 0
+# HELP ubuntu_pro_updates_exporter_last_success_timestamp_seconds Unix time of the last successful package-updates refresh; absent until one succeeds.
+# TYPE ubuntu_pro_updates_exporter_last_success_timestamp_seconds gauge
+ubuntu_pro_updates_exporter_last_success_timestamp_seconds 1.7e+09
+`), "ubuntu_pro_updates_exporter_up", "ubuntu_pro_updates_exporter_last_success_timestamp_seconds", "ubuntu_pro_updates_pending"); err != nil {
 		t.Error(err)
 	}
 }

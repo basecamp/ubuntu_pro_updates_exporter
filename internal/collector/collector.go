@@ -17,7 +17,7 @@ import (
 	"github.com/basecamp/ubuntu_pro_updates_exporter/internal/proclient"
 )
 
-const namespace = "ubuntu_pro"
+const namespace = "ubuntu_pro_updates"
 
 type pocketStatus struct {
 	pocket, status string
@@ -46,7 +46,7 @@ type snapshot struct {
 // walk takes seconds of CPU per invocation: refreshing on a timer keeps
 // scrapes instant and stops concurrent scrapes from each spawning pro
 // processes. Freshness is governed by the refresh interval and observable
-// via ubuntu_pro_last_success_timestamp_seconds.
+// via ubuntu_pro_updates_last_success_timestamp_seconds.
 type Collector struct {
 	client      proclient.Client
 	logger      *slog.Logger
@@ -68,7 +68,7 @@ type Collector struct {
 }
 
 // New returns a Collector reading from client. Call Run (or Refresh) to
-// populate it; until then it serves only ubuntu_pro_up 0. If logPackages is
+// populate it; until then it serves only ubuntu_pro_updates_exporter_up 0. If logPackages is
 // true, the full list of pending updates is logged whenever it changes, as
 // the low-cardinality answer to "which packages?" (see the README).
 func New(client proclient.Client, logger *slog.Logger, logPackages bool) *Collector {
@@ -78,15 +78,15 @@ func New(client proclient.Client, logger *slog.Logger, logPackages bool) *Collec
 		logPackages: logPackages,
 		now:         time.Now,
 		up: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "up"),
+			prometheus.BuildFQName(namespace, "exporter", "up"),
 			"Whether the last refresh of package updates from the Ubuntu Pro client succeeded.",
 			nil, nil),
 		updatesPending: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "updates", "pending"),
+			prometheus.BuildFQName(namespace, "", "pending"),
 			"Number of pending package updates, by pocket and update status.",
 			[]string{"pocket", "status"}, nil),
 		downloadBytes: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "updates", "download_bytes"),
+			prometheus.BuildFQName(namespace, "", "download_bytes"),
 			"Total download size of pending package updates, by pocket.",
 			[]string{"pocket"}, nil),
 		rebootRequired: prometheus.NewDesc(
@@ -95,11 +95,11 @@ func New(client proclient.Client, logger *slog.Logger, logPackages bool) *Collec
 				"State yes-kernel-livepatches-applied means a reboot is pending but Livepatch covers the running kernel.",
 			[]string{"state"}, nil),
 		lastSuccess: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "last_success_timestamp_seconds"),
+			prometheus.BuildFQName(namespace, "exporter", "last_success_timestamp_seconds"),
 			"Unix time of the last successful package-updates refresh; absent until one succeeds.",
 			nil, nil),
 		queryDuration: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "query_duration_seconds"),
+			prometheus.BuildFQName(namespace, "exporter", "query_duration_seconds"),
 			"Time spent querying the Ubuntu Pro client during the last refresh.",
 			nil, nil),
 	}
@@ -131,7 +131,7 @@ func (c *Collector) Refresh(ctx context.Context) {
 	}
 
 	// Reboot state is best effort: its failure is logged but does not take
-	// ubuntu_pro_up down with it.
+	// ubuntu_pro_updates_exporter_up down with it.
 	reboot, rebootErr := c.client.RebootRequired(ctx)
 	if rebootErr != nil {
 		c.logger.Warn("querying reboot-required state failed", "err", rebootErr)
@@ -165,7 +165,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect implements prometheus.Collector. It serves the cached snapshot and
 // must never panic: before the first refresh, or after a failed one, it
-// degrades to ubuntu_pro_up 0 with the detail metrics absent.
+// degrades to ubuntu_pro_updates_exporter_up 0 with the detail metrics absent.
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.mu.Lock()
 	snap := c.snap
