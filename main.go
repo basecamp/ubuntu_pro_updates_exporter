@@ -74,9 +74,9 @@ func run() int {
 	}
 
 	if _, err := exec.LookPath(*proBinary); err != nil {
-		// Not fatal: the exporter still serves ubuntu_pro_up 0, so a
+		// Not fatal: the exporter still serves ubuntu_pro_updates_exporter_up 0, so a
 		// fleet-wide rollout can observe hosts lacking the pro client.
-		logger.Warn("ubuntu pro client not found, ubuntu_pro_up will be 0",
+		logger.Warn("ubuntu pro client not found, ubuntu_pro_updates_exporter_up will be 0",
 			"binary", *proBinary, "err", err)
 	}
 
@@ -149,7 +149,7 @@ func newLogger(format string) (*slog.Logger, error) {
 
 func newBuildInfo() prometheus.Collector {
 	g := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "ubuntu_pro_exporter_build_info",
+		Name: "ubuntu_pro_updates_exporter_build_info",
 		Help: "Build information about the ubuntu-pro-updates-exporter.",
 	}, []string{"version", "revision", "goversion"})
 	g.WithLabelValues(version, commit, runtime.Version()).Set(1)

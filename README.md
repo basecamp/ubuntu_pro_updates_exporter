@@ -27,19 +27,19 @@ caches, so results are as fresh as the last `apt update`.
   enabled by default on Ubuntu). The exporter never runs `apt update` itself.
 
 If the pro client is missing or fails, the exporter keeps serving with
-`ubuntu_pro_up` set to 0. It never crashes on a degraded host.
+`ubuntu_pro_updates_exporter_up` set to 0. It never crashes on a degraded host.
 
 ## Metrics
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `ubuntu_pro_up` | gauge | | 1 if the last refresh from the pro client succeeded |
+| `ubuntu_pro_updates_exporter_up` | gauge | | 1 if the last refresh from the pro client succeeded |
 | `ubuntu_pro_updates_pending` | gauge | `pocket`, `status` | Number of pending package updates |
 | `ubuntu_pro_updates_download_bytes` | gauge | `pocket` | Total download size of pending updates |
-| `ubuntu_pro_reboot_required` | gauge | `state` | Reboot required state, encoded as an enum where the active state is 1 |
-| `ubuntu_pro_last_success_timestamp_seconds` | gauge | | Unix time of the last successful refresh, absent until one succeeds |
-| `ubuntu_pro_query_duration_seconds` | gauge | | Time spent querying the pro client during the last refresh |
-| `ubuntu_pro_exporter_build_info` | gauge | `version`, `revision`, `goversion` | Build information |
+| `ubuntu_pro_updates_reboot_required` | gauge | `state` | Reboot required state, encoded as an enum where the active state is 1 |
+| `ubuntu_pro_updates_exporter_last_success_timestamp_seconds` | gauge | | Unix time of the last successful refresh, absent until one succeeds |
+| `ubuntu_pro_updates_exporter_query_duration_seconds` | gauge | | Time spent querying the pro client during the last refresh |
+| `ubuntu_pro_updates_exporter_build_info` | gauge | `version`, `revision`, `goversion` | Build information |
 
 Label values are fixed and low cardinality. All series are always exported,
 at 0 when empty, so alerts never have to deal with absent series.
@@ -66,10 +66,10 @@ sum by (instance) (ubuntu_pro_updates_pending{pocket="standard-security"})
 sum by (instance) (ubuntu_pro_updates_pending{status="pending_attach"})
 
 # Hosts needing a reboot, excluding those covered by Livepatch
-ubuntu_pro_reboot_required{state="yes"} == 1
+ubuntu_pro_updates_reboot_required{state="yes"} == 1
 
 # Exporter healthy but data stale for a day
-time() - ubuntu_pro_last_success_timestamp_seconds > 86400
+time() - ubuntu_pro_updates_exporter_last_success_timestamp_seconds > 86400
 ```
 
 ## Which packages?
@@ -161,12 +161,12 @@ concurrent scrapes pile up pro processes. The background loop refreshes the
 data instead, and scrapes serve the cached snapshot. The default interval of
 12 hours mirrors the cadence of apt-daily, whose timer runs twice a day and
 refreshes package lists at most once per day. When a refresh fails, the
-detail metrics are dropped rather than served stale, and `ubuntu_pro_up`
-together with `ubuntu_pro_last_success_timestamp_seconds` keeps failure and
+detail metrics are dropped rather than served stale, and `ubuntu_pro_updates_exporter_up`
+together with `ubuntu_pro_updates_exporter_last_success_timestamp_seconds` keeps failure and
 staleness alertable.
 
 The reboot required query is best effort. If it fails while the updates
-query succeeds, `ubuntu_pro_up` stays 1 and only the reboot metric is
+query succeeds, `ubuntu_pro_updates_exporter_up` stays 1 and only the reboot metric is
 omitted.
 
 ## License
