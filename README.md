@@ -27,20 +27,21 @@ caches, so results are as fresh as the last `apt update`.
   enabled by default on Ubuntu). The exporter never runs `apt update` itself.
 
 If the pro client is missing or fails, the exporter keeps serving with
-`ubuntu_pro_updates_up` set to 0. It never crashes on a degraded host.
+`ubuntu_pro_updates_exporter_up` set to 0. It never crashes on a degraded host.
 
 CVE metrics use `u.pro.security.cves.v1`, which exists since pro client 35
 and downloads Canonical's public vulnerability data, so it needs network
 access and adds a few seconds to each refresh. No subscription is required
-for it either. On an older client the exporter logs one warning and simply
-omits the CVE metrics; they appear on their own once the client is
-upgraded. `ubuntu_pro_updates_client_info` makes that rollout observable.
+for it either. On an older client the exporter logs one warning and
+disables CVE collection for the life of the process: upgrade the client
+and restart the exporter to enable it. `ubuntu_pro_updates_client_info`
+makes that rollout observable.
 
 ## Metrics
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `ubuntu_pro_updates_up` | gauge | | 1 if the last refresh from the pro client succeeded |
+| `ubuntu_pro_updates_exporter_up` | gauge | | 1 if the last refresh from the pro client succeeded |
 | `ubuntu_pro_updates_pending` | gauge | `pocket`, `status` | Number of pending package updates |
 | `ubuntu_pro_updates_download_bytes` | gauge | `pocket` | Total download size of pending updates |
 | `ubuntu_pro_updates_reboot_required` | gauge | `state` | Reboot required state, encoded as an enum where the active state is 1 |
@@ -49,8 +50,8 @@ upgraded. `ubuntu_pro_updates_client_info` makes that rollout observable.
 | `ubuntu_pro_updates_cve_fixes` | gauge | `origin` | Package-CVE pairs with an unapplied fix, by fix pocket (pro client 35 or newer) |
 | `ubuntu_pro_updates_attached` | gauge | | 1 if the host is attached to an Ubuntu Pro subscription |
 | `ubuntu_pro_updates_client_info` | gauge | `version` | Installed pro client version |
-| `ubuntu_pro_updates_last_success_timestamp_seconds` | gauge | | Unix time of the last successful refresh, absent until one succeeds |
-| `ubuntu_pro_updates_query_duration_seconds` | gauge | | Time spent querying the pro client during the last refresh |
+| `ubuntu_pro_updates_exporter_last_success_timestamp_seconds` | gauge | | Unix time of the last successful refresh, absent until one succeeds |
+| `ubuntu_pro_updates_exporter_query_duration_seconds` | gauge | | Time spent querying the pro client during the last refresh |
 | `ubuntu_pro_updates_exporter_build_info` | gauge | `version`, `revision`, `goversion` | Build information |
 
 Label values are fixed and low cardinality. All series are always exported,
@@ -90,7 +91,7 @@ sum by (instance) (ubuntu_pro_updates_pending{status="pending_attach"})
 ubuntu_pro_updates_reboot_required{state="yes"} == 1
 
 # Exporter healthy but data stale for a day
-time() - ubuntu_pro_updates_last_success_timestamp_seconds > 86400
+time() - ubuntu_pro_updates_exporter_last_success_timestamp_seconds > 86400
 ```
 
 ## Which packages?
@@ -103,10 +104,17 @@ kind of data.
 
 Instead, run with `--log.package-updates` (ideally combined with
 `--log.format=json`). Whenever the set of pending updates changes, the
-exporter logs the full list with package, version, pocket and status as one
-structured log entry. Ship that to your log store and join on hostname and
-time. The metrics tell you that updates are pending and how many, the log
-tells you which.
+exporter logs the full list with package, version, pocket and status. Ship
+that to your log store and join on hostname and time. The metrics tell you
+that updates are pending and how many, the log tells you which. The same
+pattern powers `--log.installed-packages` (the inventory manifest),
+`--log.cves` (pairs with an unapplied fix) and `--log.cves-in-effect`
+(pairs with no fix released, at or above `--log.cves-min-priority`, so
+operators can mitigate in the meantime; untriaged CVEs are not logged).
+
+Large lists are emitted in chunks of 200 items so entries survive
+journald's line-length limit: the entries of one change share a `change`
+id and carry `part`/`parts` numbering for reassembly in the log store.
 
 ## Installing
 
@@ -148,6 +156,8 @@ attached.
 | `--log.package-updates` | `false` | Log the pending update list when it changes |
 | `--log.installed-packages` | `false` | Log the installed-package manifest when it changes |
 | `--log.cves` | `false` | Log the fixable package-CVE pairs when they change |
+| `--log.cves-in-effect` | `false` | Also log the in-effect (no fix released) pairs when they change |
+| `--log.cves-min-priority` | `high` | Minimum Ubuntu CVE priority for the in-effect log |
 | `--version` | | Print version and exit |
 
 Update data is refreshed by a background loop every `--pro.refresh-interval`.
@@ -185,12 +195,12 @@ concurrent scrapes pile up pro processes. The background loop refreshes the
 data instead, and scrapes serve the cached snapshot. The default interval of
 12 hours mirrors the cadence of apt-daily, whose timer runs twice a day and
 refreshes package lists at most once per day. When a refresh fails, the
-detail metrics are dropped rather than served stale, and `ubuntu_pro_updates_up`
-together with `ubuntu_pro_updates_last_success_timestamp_seconds` keeps failure and
+detail metrics are dropped rather than served stale, and `ubuntu_pro_updates_exporter_up`
+together with `ubuntu_pro_updates_exporter_last_success_timestamp_seconds` keeps failure and
 staleness alertable.
 
 The reboot required query is best effort. If it fails while the updates
-query succeeds, `ubuntu_pro_updates_up` stays 1 and only the reboot metric is
+query succeeds, `ubuntu_pro_updates_exporter_up` stays 1 and only the reboot metric is
 omitted.
 
 ## License

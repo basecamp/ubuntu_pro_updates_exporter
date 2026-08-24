@@ -5,6 +5,7 @@ package collector
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -19,6 +20,14 @@ import (
 
 const namespace = "ubuntu_pro_updates"
 
+// exporterSubsystem prefixes the metrics about the exporter itself, keeping
+// them apart from the domain metrics.
+const exporterSubsystem = "exporter"
+
+// logChunkSize bounds one log entry's list payload so entries survive
+// journald's line limit (about 48KiB) intact. A var so tests can shrink it.
+var logChunkSize = 200
+
 type pocketStatus struct {
 	pocket, status string
 }
@@ -27,12 +36,31 @@ type cveBucket struct {
 	priority, status string
 }
 
+// priorityRank orders the Ubuntu CVE priorities; unknown or untriaged
+// priorities rank below negligible.
+func priorityRank(priority string) int {
+	switch priority {
+	case "negligible":
+		return 0
+	case "low":
+		return 1
+	case "medium":
+		return 2
+	case "high":
+		return 3
+	case "critical":
+		return 4
+	default:
+		return -1
+	}
+}
+
 // Options selects the optional collections and logs.
 type Options struct {
-	// CollectCVEs queries u.pro.security.cves.v1 on every refresh. On pro
-	// clients older than 35 the endpoint does not exist; the collector then
-	// logs one warning and keeps retrying, so the metrics appear on their own
-	// once the client is upgraded.
+	// CollectCVEs queries u.pro.security.cves.v1 on every refresh. The
+	// endpoint exists since pro client 35: on an older client the collector
+	// logs one warning and disables CVE collection for the life of the
+	// process; restart the exporter after upgrading the client.
 	CollectCVEs bool
 	// LogPackageUpdates logs the full pending-update list whenever it changes.
 	LogPackageUpdates bool
@@ -41,6 +69,14 @@ type Options struct {
 	LogInstalledPackages bool
 	// LogCVEs logs the fixable package-CVE pairs whenever they change.
 	LogCVEs bool
+	// LogCVEsInEffect also logs the in-effect package-CVE pairs (the host is
+	// affected and no fix has been released) whenever they change, so
+	// operators can mitigate while a fix is pending. Untriaged CVEs are not
+	// logged.
+	LogCVEsInEffect bool
+	// LogCVEsMinPriority is the minimum Ubuntu CVE priority for the
+	// in-effect log: negligible, low, medium, high or critical.
+	LogCVEsMinPriority string
 }
 
 // snapshot is the cached result of one refresh cycle. Detail fields are nil
@@ -71,7 +107,7 @@ type snapshot struct {
 // more): refreshing on a timer keeps scrapes instant and stops concurrent
 // scrapes from each spawning pro processes. Freshness is governed by the
 // refresh interval and observable via
-// ubuntu_pro_updates_last_success_timestamp_seconds.
+// ubuntu_pro_updates_exporter_last_success_timestamp_seconds.
 type Collector struct {
 	client proclient.Client
 	logger *slog.Logger
@@ -92,16 +128,17 @@ type Collector struct {
 	// now allows tests to fix the clock.
 	now func() time.Time
 
-	mu                   sync.Mutex
-	snap                 snapshot
-	loggedUpdates        [32]byte // fingerprint of the last logged update set
-	loggedInstalled      [32]byte // fingerprint of the last logged manifest
-	loggedCVEs           [32]byte // fingerprint of the last logged fixable set
-	cveUnsupportedWarned bool
+	mu              sync.Mutex
+	snap            snapshot
+	loggedUpdates   [32]byte // fingerprint of the last logged update set
+	loggedInstalled [32]byte // fingerprint of the last logged manifest
+	loggedFixable   [32]byte // fingerprint of the last logged fixable set
+	loggedInEffect  [32]byte // fingerprint of the last logged in-effect set
+	cveUnsupported  bool
 }
 
 // New returns a Collector reading from client. Call Run (or Refresh) to
-// populate it; until then it serves only ubuntu_pro_updates_up 0.
+// populate it; until then it serves only ubuntu_pro_updates_exporter_up 0.
 func New(client proclient.Client, logger *slog.Logger, opts Options) *Collector {
 	return &Collector{
 		client: client,
@@ -109,7 +146,7 @@ func New(client proclient.Client, logger *slog.Logger, opts Options) *Collector 
 		opts:   opts,
 		now:    time.Now,
 		up: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "up"),
+			prometheus.BuildFQName(namespace, exporterSubsystem, "up"),
 			"Whether the last refresh of package updates from the Ubuntu Pro client succeeded.",
 			nil, nil),
 		updatesPending: prometheus.NewDesc(
@@ -150,11 +187,11 @@ func New(client proclient.Client, logger *slog.Logger, opts Options) *Collector 
 			"Installed Ubuntu Pro client version. CVE metrics need version 35 or newer.",
 			[]string{"version"}, nil),
 		lastSuccess: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "last_success_timestamp_seconds"),
+			prometheus.BuildFQName(namespace, exporterSubsystem, "last_success_timestamp_seconds"),
 			"Unix time of the last successful package-updates refresh; absent until one succeeds.",
 			nil, nil),
 		queryDuration: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "query_duration_seconds"),
+			prometheus.BuildFQName(namespace, exporterSubsystem, "query_duration_seconds"),
 			"Time spent querying the Ubuntu Pro client during the last refresh.",
 			nil, nil),
 	}
@@ -178,7 +215,7 @@ func (c *Collector) Run(ctx context.Context, interval time.Duration) {
 // Refresh queries the pro client once and replaces the cached snapshot.
 // It never runs during a scrape. Everything except the package-updates query
 // is best effort: a failure is logged and its metrics omitted, without taking
-// ubuntu_pro_updates_up down.
+// ubuntu_pro_updates_exporter_up down.
 func (c *Collector) Refresh(ctx context.Context) {
 	start := c.now()
 
@@ -243,35 +280,38 @@ func (c *Collector) Refresh(ctx context.Context) {
 		c.maybeLogInstalled(manifest)
 	}
 	if cves != nil {
-		c.maybeLogCVEs(cves)
+		c.maybeLogFixableCVEs(cves)
+		c.maybeLogInEffectCVEs(cves)
 	}
 }
 
-// refreshCVEs queries the CVE endpoint, distinguishing "this client is too
-// old" (warn once, keep retrying so an upgrade heals automatically) from an
-// actual failure.
+// refreshCVEs queries the CVE endpoint. When the installed client does not
+// provide it (older than 35), CVE collection is disabled for the life of the
+// process after a single warning; restart the exporter once the client is
+// upgraded. Transient failures keep being retried on the normal cadence.
 func (c *Collector) refreshCVEs(ctx context.Context) *proclient.CVEData {
 	if !c.opts.CollectCVEs {
 		return nil
 	}
 
+	c.mu.Lock()
+	unsupported := c.cveUnsupported
+	c.mu.Unlock()
+	if unsupported {
+		return nil
+	}
+
 	cves, err := c.client.CVEs(ctx)
 	if err == nil {
-		c.mu.Lock()
-		c.cveUnsupportedWarned = false
-		c.mu.Unlock()
 		return cves
 	}
 
 	if proclient.IsUnsupported(err) {
 		c.mu.Lock()
-		warned := c.cveUnsupportedWarned
-		c.cveUnsupportedWarned = true
+		c.cveUnsupported = true
 		c.mu.Unlock()
-		if !warned {
-			c.logger.Warn("pro client does not provide the CVE endpoint; CVE metrics stay absent until the client is upgraded to 35 or newer",
-				"endpoint", "u.pro.security.cves.v1")
-		}
+		c.logger.Warn("pro client does not provide the CVE endpoint; CVE collection is disabled. Upgrade the client to 35 or newer and restart the exporter",
+			"endpoint", "u.pro.security.cves.v1")
 		return nil
 	}
 
@@ -296,7 +336,8 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect implements prometheus.Collector. It serves the cached snapshot and
 // must never panic: before the first refresh, or after a failed one, it
-// degrades to ubuntu_pro_updates_up 0 with the detail metrics absent.
+// degrades to ubuntu_pro_updates_exporter_up 0 with the detail metrics
+// absent.
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.mu.Lock()
 	snap := c.snap
@@ -457,19 +498,40 @@ func (c *Collector) collectCVEs(ch chan<- prometheus.Metric, data *proclient.CVE
 	}
 }
 
-// maybeLog fingerprints lines and returns true when the set changed since the
-// last time this fingerprint slot logged.
-func (c *Collector) maybeLog(slot *[32]byte, lines []string) bool {
+// maybeLog fingerprints lines and reports whether the set changed since the
+// last time this fingerprint slot logged, along with a short change id that
+// ties the chunked entries of one change together.
+func (c *Collector) maybeLog(slot *[32]byte, lines []string) (bool, string) {
 	sort.Strings(lines)
 	fingerprint := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if fingerprint == *slot {
-		return false
+		return false, ""
 	}
 	*slot = fingerprint
-	return true
+	return true, hex.EncodeToString(fingerprint[:4])
+}
+
+// logList emits one log entry per chunk of logChunkSize items, so large lists
+// survive journald's line limit. Entries of the same change share the change
+// id and carry part/parts numbering for reassembly in the log store.
+func logList[T any](logger *slog.Logger, msg, changeID, totalKey string, total int, listKey string, items []T) {
+	parts := (len(items) + logChunkSize - 1) / logChunkSize
+	if parts == 0 {
+		parts = 1
+	}
+	for i := 0; i < parts; i++ {
+		lo := i * logChunkSize
+		hi := min(lo+logChunkSize, len(items))
+		logger.Info(msg,
+			"change", changeID,
+			"part", i+1,
+			"parts", parts,
+			totalKey, total,
+			listKey, items[lo:hi])
+	}
 }
 
 // maybeLogUpdates logs the full pending-update list when it changes, giving
@@ -484,13 +546,13 @@ func (c *Collector) maybeLogUpdates(pu *proclient.PackageUpdates) {
 	for _, u := range pu.Updates {
 		lines = append(lines, fmt.Sprintf("%s %s %s %s", u.Package, u.Version, u.ProvidedBy, u.Status))
 	}
-	if !c.maybeLog(&c.loggedUpdates, lines) {
+	changed, id := c.maybeLog(&c.loggedUpdates, lines)
+	if !changed {
 		return
 	}
 
-	c.logger.Info("pending package updates changed",
-		"num_updates", len(pu.Updates),
-		"updates", pu.Updates)
+	logList(c.logger, "pending package updates changed", id,
+		"num_updates", len(pu.Updates), "updates", pu.Updates)
 }
 
 // maybeLogInstalled logs the installed-package manifest when it changes, so
@@ -500,13 +562,13 @@ func (c *Collector) maybeLogInstalled(manifest []proclient.InstalledPackage) {
 	for _, p := range manifest {
 		lines = append(lines, p.Package+" "+p.Version)
 	}
-	if !c.maybeLog(&c.loggedInstalled, lines) {
+	changed, id := c.maybeLog(&c.loggedInstalled, lines)
+	if !changed {
 		return
 	}
 
-	c.logger.Info("installed packages changed",
-		"num_installed", len(manifest),
-		"packages", manifest)
+	logList(c.logger, "installed packages changed", id,
+		"num_installed", len(manifest), "packages", manifest)
 }
 
 type cveFixLogEntry struct {
@@ -517,10 +579,9 @@ type cveFixLogEntry struct {
 	FixOrigin  string `json:"fix_origin"`
 }
 
-// maybeLogCVEs logs the fixable package-CVE pairs when they change. Unfixed
-// and untriaged CVEs stay out of the log (they are visible in the aggregate
-// metrics) to keep the entries actionable.
-func (c *Collector) maybeLogCVEs(data *proclient.CVEData) {
+// maybeLogFixableCVEs logs the fixable package-CVE pairs when they change:
+// the direct action here is applying the fix.
+func (c *Collector) maybeLogFixableCVEs(data *proclient.CVEData) {
 	if !c.opts.LogCVEs {
 		return
 	}
@@ -551,11 +612,65 @@ func (c *Collector) maybeLogCVEs(data *proclient.CVEData) {
 	for _, f := range fixes {
 		lines = append(lines, f.Package+" "+f.CVE+" "+f.FixVersion)
 	}
-	if !c.maybeLog(&c.loggedCVEs, lines) {
+	changed, id := c.maybeLog(&c.loggedFixable, lines)
+	if !changed {
 		return
 	}
 
-	c.logger.Info("fixable CVEs changed",
-		"num_fixes", len(fixes),
-		"fixes", fixes)
+	logList(c.logger, "fixable CVEs changed", id,
+		"num_fixes", len(fixes), "fixes", fixes)
+}
+
+type cveInEffectLogEntry struct {
+	Package  string `json:"package"`
+	CVE      string `json:"cve"`
+	Priority string `json:"priority"`
+}
+
+// maybeLogInEffectCVEs logs the package-CVE pairs the host is exposed to with
+// no released fix, at or above the configured priority, so operators can
+// mitigate in the meantime. Untriaged pairs (unknown fix status or unknown
+// priority) are excluded: there is nothing actionable in them yet, and they
+// remain visible in the aggregate metrics.
+func (c *Collector) maybeLogInEffectCVEs(data *proclient.CVEData) {
+	if !c.opts.LogCVEsInEffect {
+		return
+	}
+	minRank := priorityRank(c.opts.LogCVEsMinPriority)
+
+	var pairs []cveInEffectLogEntry
+	for name, pkg := range data.Packages {
+		for _, fix := range pkg.CVEs {
+			if fix.FixStatus != "vulnerable" {
+				continue
+			}
+			priority := data.CVEs[fix.Name].Priority
+			if priorityRank(priority) < minRank {
+				continue
+			}
+			pairs = append(pairs, cveInEffectLogEntry{
+				Package:  name,
+				CVE:      fix.Name,
+				Priority: priority,
+			})
+		}
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].Package != pairs[j].Package {
+			return pairs[i].Package < pairs[j].Package
+		}
+		return pairs[i].CVE < pairs[j].CVE
+	})
+
+	lines := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		lines = append(lines, p.Package+" "+p.CVE)
+	}
+	changed, id := c.maybeLog(&c.loggedInEffect, lines)
+	if !changed {
+		return
+	}
+
+	logList(c.logger, "in-effect CVEs changed", id,
+		"num_cves", len(pairs), "cves", pairs)
 }

@@ -1,7 +1,9 @@
 package collector
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -21,6 +23,7 @@ type fakeClient struct {
 	installed *proclient.InstalledSummary
 	cveData   *proclient.CVEData
 	cvesErr   error
+	cveCalls  int
 	manifest  []proclient.InstalledPackage
 	attached  *bool
 	version   string
@@ -55,6 +58,7 @@ func (f *fakeClient) PackageManifest(context.Context) ([]proclient.InstalledPack
 }
 
 func (f *fakeClient) CVEs(context.Context) (*proclient.CVEData, error) {
+	f.cveCalls++
 	if f.cvesErr != nil {
 		return nil, f.cvesErr
 	}
@@ -151,13 +155,13 @@ func newTestCollector(client proclient.Client) *Collector {
 }
 
 const allFamiliesAbsentExceptUp = `
-# HELP ubuntu_pro_updates_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
-# TYPE ubuntu_pro_updates_up gauge
-ubuntu_pro_updates_up 0
+# HELP ubuntu_pro_updates_exporter_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
+# TYPE ubuntu_pro_updates_exporter_up gauge
+ubuntu_pro_updates_exporter_up 0
 `
 
 var allFamilyNames = []string{
-	"ubuntu_pro_updates_up",
+	"ubuntu_pro_updates_exporter_up",
 	"ubuntu_pro_updates_pending",
 	"ubuntu_pro_updates_download_bytes",
 	"ubuntu_pro_updates_reboot_required",
@@ -166,8 +170,8 @@ var allFamilyNames = []string{
 	"ubuntu_pro_updates_cve_fixes",
 	"ubuntu_pro_updates_attached",
 	"ubuntu_pro_updates_client_info",
-	"ubuntu_pro_updates_last_success_timestamp_seconds",
-	"ubuntu_pro_updates_query_duration_seconds",
+	"ubuntu_pro_updates_exporter_last_success_timestamp_seconds",
+	"ubuntu_pro_updates_exporter_query_duration_seconds",
 }
 
 func TestCollectBeforeFirstRefresh(t *testing.T) {
@@ -185,9 +189,9 @@ func TestCollectSuccess(t *testing.T) {
 	c.Refresh(context.Background())
 
 	expected := `
-# HELP ubuntu_pro_updates_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
-# TYPE ubuntu_pro_updates_up gauge
-ubuntu_pro_updates_up 1
+# HELP ubuntu_pro_updates_exporter_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
+# TYPE ubuntu_pro_updates_exporter_up gauge
+ubuntu_pro_updates_exporter_up 1
 # HELP ubuntu_pro_updates_pending Number of pending package updates, by pocket and update status.
 # TYPE ubuntu_pro_updates_pending gauge
 ubuntu_pro_updates_pending{pocket="esm-apps",status="pending_attach"} 1
@@ -260,9 +264,9 @@ ubuntu_pro_updates_attached 0
 # HELP ubuntu_pro_updates_client_info Installed Ubuntu Pro client version. CVE metrics need version 35 or newer.
 # TYPE ubuntu_pro_updates_client_info gauge
 ubuntu_pro_updates_client_info{version="37.2ubuntu~22.04.1"} 1
-# HELP ubuntu_pro_updates_last_success_timestamp_seconds Unix time of the last successful package-updates refresh; absent until one succeeds.
-# TYPE ubuntu_pro_updates_last_success_timestamp_seconds gauge
-ubuntu_pro_updates_last_success_timestamp_seconds 1.7e+09
+# HELP ubuntu_pro_updates_exporter_last_success_timestamp_seconds Unix time of the last successful package-updates refresh; absent until one succeeds.
+# TYPE ubuntu_pro_updates_exporter_last_success_timestamp_seconds gauge
+ubuntu_pro_updates_exporter_last_success_timestamp_seconds 1.7e+09
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected), allFamilyNames[:len(allFamilyNames)-1]...)
 	if err != nil {
@@ -277,12 +281,12 @@ func TestCollectProFailure(t *testing.T) {
 	// Every query failed: up 0 and a duration; detail families and the
 	// never-succeeded timestamp must be absent.
 	expected := `
-# HELP ubuntu_pro_updates_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
-# TYPE ubuntu_pro_updates_up gauge
-ubuntu_pro_updates_up 0
-# HELP ubuntu_pro_updates_query_duration_seconds Time spent querying the Ubuntu Pro client during the last refresh.
-# TYPE ubuntu_pro_updates_query_duration_seconds gauge
-ubuntu_pro_updates_query_duration_seconds 0
+# HELP ubuntu_pro_updates_exporter_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
+# TYPE ubuntu_pro_updates_exporter_up gauge
+ubuntu_pro_updates_exporter_up 0
+# HELP ubuntu_pro_updates_exporter_query_duration_seconds Time spent querying the Ubuntu Pro client during the last refresh.
+# TYPE ubuntu_pro_updates_exporter_query_duration_seconds gauge
+ubuntu_pro_updates_exporter_query_duration_seconds 0
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected), allFamilyNames...)
 	if err != nil {
@@ -290,33 +294,148 @@ ubuntu_pro_updates_query_duration_seconds 0
 	}
 }
 
-func TestCVEUnsupportedClient(t *testing.T) {
+func TestCVEUnsupportedChecksOnce(t *testing.T) {
 	fake := healthyFake()
 	fake.cvesErr = &proclient.APIError{Code: "api-invalid-endpoint", Title: "'u.pro.security.cves.v1' is not a valid endpoint"}
 	c := newTestCollector(fake)
+
+	c.Refresh(context.Background())
+	c.Refresh(context.Background())
 	c.Refresh(context.Background())
 
-	// The rest of the collection stays healthy; only the CVE families are
-	// absent until the pro client is upgraded.
+	// The unsupported endpoint is probed exactly once; afterwards CVE
+	// collection stays disabled until the process restarts.
+	if fake.cveCalls != 1 {
+		t.Errorf("CVE endpoint probed %d times, want 1", fake.cveCalls)
+	}
 	if got := testutil.CollectAndCount(c, "ubuntu_pro_updates_cves", "ubuntu_pro_updates_cve_fixes"); got != 0 {
 		t.Errorf("cve series with unsupported client = %d, want 0", got)
 	}
 	if err := testutil.CollectAndCompare(c, strings.NewReader(`
-# HELP ubuntu_pro_updates_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
-# TYPE ubuntu_pro_updates_up gauge
-ubuntu_pro_updates_up 1
-`), "ubuntu_pro_updates_up"); err != nil {
+# HELP ubuntu_pro_updates_exporter_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
+# TYPE ubuntu_pro_updates_exporter_up gauge
+ubuntu_pro_updates_exporter_up 1
+`), "ubuntu_pro_updates_exporter_up"); err != nil {
 		t.Error(err)
 	}
 }
 
+func TestCVETransientFailureRetries(t *testing.T) {
+	fake := healthyFake()
+	fake.cvesErr = errors.New("data download timed out")
+	c := newTestCollector(fake)
+
+	c.Refresh(context.Background())
+	c.Refresh(context.Background())
+
+	// A transient failure is not a missing endpoint: keep trying.
+	if fake.cveCalls != 2 {
+		t.Errorf("CVE endpoint probed %d times, want 2", fake.cveCalls)
+	}
+}
+
 func TestCVEsDisabledByOption(t *testing.T) {
-	c := New(healthyFake(), slog.New(slog.NewTextHandler(io.Discard, nil)), Options{CollectCVEs: false})
+	fake := healthyFake()
+	c := New(fake, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{CollectCVEs: false})
 	c.now = func() time.Time { return time.Unix(1700000000, 0) }
 	c.Refresh(context.Background())
 
+	if fake.cveCalls != 0 {
+		t.Errorf("CVE endpoint probed %d times with collection disabled, want 0", fake.cveCalls)
+	}
 	if got := testutil.CollectAndCount(c, "ubuntu_pro_updates_cves", "ubuntu_pro_updates_cve_fixes"); got != 0 {
 		t.Errorf("cve series with collection disabled = %d, want 0", got)
+	}
+}
+
+// captureCollector returns a collector whose logs land in buf as JSON lines.
+func captureCollector(client proclient.Client, opts Options, buf *bytes.Buffer) *Collector {
+	c := New(client, slog.New(slog.NewJSONHandler(buf, nil)), opts)
+	c.now = func() time.Time { return time.Unix(1700000000, 0) }
+	return c
+}
+
+// logRecords decodes the captured JSON log lines with the given message.
+func logRecords(t *testing.T, buf *bytes.Buffer, msg string) []map[string]any {
+	t.Helper()
+	var records []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("parsing log line %q: %v", line, err)
+		}
+		if record["msg"] == msg {
+			records = append(records, record)
+		}
+	}
+	return records
+}
+
+func TestChunkedLogging(t *testing.T) {
+	old := logChunkSize
+	logChunkSize = 2
+	defer func() { logChunkSize = old }()
+
+	var buf bytes.Buffer
+	fake := healthyFake()
+	fake.manifest = []proclient.InstalledPackage{
+		{Package: "a", Version: "1"},
+		{Package: "b", Version: "1"},
+		{Package: "c", Version: "1"},
+		{Package: "d", Version: "1"},
+		{Package: "e", Version: "1"},
+	}
+	c := captureCollector(fake, Options{LogInstalledPackages: true}, &buf)
+	c.Refresh(context.Background())
+
+	records := logRecords(t, &buf, "installed packages changed")
+	// 5 items in chunks of 2 = 3 parts, all sharing one change id.
+	if len(records) != 3 {
+		t.Fatalf("got %d log entries, want 3", len(records))
+	}
+	change := records[0]["change"]
+	for i, record := range records {
+		if record["change"] != change {
+			t.Errorf("entry %d change = %v, want %v", i, record["change"], change)
+		}
+		if record["parts"] != float64(3) || record["part"] != float64(i+1) {
+			t.Errorf("entry %d part/parts = %v/%v, want %d/3", i, record["part"], record["parts"], i+1)
+		}
+		if record["num_installed"] != float64(5) {
+			t.Errorf("entry %d num_installed = %v, want 5", i, record["num_installed"])
+		}
+	}
+
+	// A second refresh with the same data logs nothing new.
+	buf.Reset()
+	c.Refresh(context.Background())
+	if records := logRecords(t, &buf, "installed packages changed"); len(records) != 0 {
+		t.Errorf("unchanged manifest logged %d entries, want 0", len(records))
+	}
+}
+
+func TestInEffectCVELogRespectsMinPriority(t *testing.T) {
+	var buf bytes.Buffer
+	fake := healthyFake()
+	// libexample: CVE-2024-0003 vulnerable (low); othertool: CVE-2024-0001
+	// vulnerable (critical). With min priority high only the critical pair
+	// may be logged.
+	c := captureCollector(fake, Options{CollectCVEs: true, LogCVEsInEffect: true, LogCVEsMinPriority: "high"}, &buf)
+	c.Refresh(context.Background())
+
+	records := logRecords(t, &buf, "in-effect CVEs changed")
+	if len(records) != 1 {
+		t.Fatalf("got %d log entries, want 1", len(records))
+	}
+	if records[0]["num_cves"] != float64(1) {
+		t.Errorf("num_cves = %v, want 1", records[0]["num_cves"])
+	}
+	out := buf.String()
+	if !strings.Contains(out, "CVE-2024-0001") || strings.Contains(out, "CVE-2024-0003") {
+		t.Errorf("expected only the critical pair in the log, got: %s", out)
 	}
 }
 
@@ -326,10 +445,10 @@ func TestLastSuccessSurvivesFailedRefresh(t *testing.T) {
 	c.Refresh(context.Background())
 
 	if err := testutil.CollectAndCompare(c, strings.NewReader(`
-# HELP ubuntu_pro_updates_last_success_timestamp_seconds Unix time of the last successful package-updates refresh; absent until one succeeds.
-# TYPE ubuntu_pro_updates_last_success_timestamp_seconds gauge
-ubuntu_pro_updates_last_success_timestamp_seconds 1.7e+09
-`), "ubuntu_pro_updates_last_success_timestamp_seconds"); err != nil {
+# HELP ubuntu_pro_updates_exporter_last_success_timestamp_seconds Unix time of the last successful package-updates refresh; absent until one succeeds.
+# TYPE ubuntu_pro_updates_exporter_last_success_timestamp_seconds gauge
+ubuntu_pro_updates_exporter_last_success_timestamp_seconds 1.7e+09
+`), "ubuntu_pro_updates_exporter_last_success_timestamp_seconds"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -339,13 +458,13 @@ ubuntu_pro_updates_last_success_timestamp_seconds 1.7e+09
 	fake.updates = nil
 	c.Refresh(context.Background())
 	if err := testutil.CollectAndCompare(c, strings.NewReader(`
-# HELP ubuntu_pro_updates_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
-# TYPE ubuntu_pro_updates_up gauge
-ubuntu_pro_updates_up 0
-# HELP ubuntu_pro_updates_last_success_timestamp_seconds Unix time of the last successful package-updates refresh; absent until one succeeds.
-# TYPE ubuntu_pro_updates_last_success_timestamp_seconds gauge
-ubuntu_pro_updates_last_success_timestamp_seconds 1.7e+09
-`), "ubuntu_pro_updates_up", "ubuntu_pro_updates_last_success_timestamp_seconds", "ubuntu_pro_updates_pending"); err != nil {
+# HELP ubuntu_pro_updates_exporter_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
+# TYPE ubuntu_pro_updates_exporter_up gauge
+ubuntu_pro_updates_exporter_up 0
+# HELP ubuntu_pro_updates_exporter_last_success_timestamp_seconds Unix time of the last successful package-updates refresh; absent until one succeeds.
+# TYPE ubuntu_pro_updates_exporter_last_success_timestamp_seconds gauge
+ubuntu_pro_updates_exporter_last_success_timestamp_seconds 1.7e+09
+`), "ubuntu_pro_updates_exporter_up", "ubuntu_pro_updates_exporter_last_success_timestamp_seconds", "ubuntu_pro_updates_pending"); err != nil {
 		t.Error(err)
 	}
 }

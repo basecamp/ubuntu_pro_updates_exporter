@@ -56,14 +56,19 @@ func run() int {
 			"Log format: text or json.")
 		collectCVEs = flag.Bool("pro.cves", true,
 			"Collect CVE metrics via u.pro.security.cves.v1. Needs pro client 35 or newer and "+
-				"network access; on older clients the exporter warns once and the metrics appear "+
-				"automatically after the client is upgraded.")
+				"network access; on an older client the exporter warns once and disables CVE "+
+				"collection. Restart the exporter after upgrading the client.")
 		logPackages = flag.Bool("log.package-updates", false,
 			"Log the full list of pending package updates whenever it changes.")
 		logInstalled = flag.Bool("log.installed-packages", false,
 			"Log the installed-package manifest whenever it changes.")
 		logCVEs = flag.Bool("log.cves", false,
 			"Log the fixable package-CVE pairs whenever they change.")
+		logCVEsInEffect = flag.Bool("log.cves-in-effect", false,
+			"Also log the in-effect package-CVE pairs (no fix released yet) whenever they change, "+
+				"at or above log.cves-min-priority, so operators can mitigate in the meantime.")
+		logCVEsMinPriority = flag.String("log.cves-min-priority", "high",
+			"Minimum Ubuntu CVE priority for the in-effect CVE log: negligible, low, medium, high or critical.")
 		printVersion = flag.Bool("version", false,
 			"Print version and exit.")
 	)
@@ -81,10 +86,17 @@ func run() int {
 		return 2
 	}
 
+	switch *logCVEsMinPriority {
+	case "negligible", "low", "medium", "high", "critical":
+	default:
+		fmt.Fprintf(os.Stderr, "unknown log.cves-min-priority %q (want negligible, low, medium, high or critical)\n", *logCVEsMinPriority)
+		return 2
+	}
+
 	if _, err := exec.LookPath(*proBinary); err != nil {
-		// Not fatal: the exporter still serves ubuntu_pro_updates_up 0, so a
-		// fleet-wide rollout can observe hosts lacking the pro client.
-		logger.Warn("ubuntu pro client not found, ubuntu_pro_updates_up will be 0",
+		// Not fatal: the exporter still serves ubuntu_pro_updates_exporter_up 0,
+		// so a fleet-wide rollout can observe hosts lacking the pro client.
+		logger.Warn("ubuntu pro client not found, ubuntu_pro_updates_exporter_up will be 0",
 			"binary", *proBinary, "err", err)
 	}
 
@@ -94,6 +106,8 @@ func run() int {
 		LogPackageUpdates:    *logPackages,
 		LogInstalledPackages: *logInstalled,
 		LogCVEs:              *logCVEs,
+		LogCVEsInEffect:      *logCVEsInEffect,
+		LogCVEsMinPriority:   *logCVEsMinPriority,
 	})
 
 	reg := prometheus.NewRegistry()
