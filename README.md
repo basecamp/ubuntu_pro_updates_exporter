@@ -29,6 +29,14 @@ caches, so results are as fresh as the last `apt update`.
 If the pro client is missing or fails, the exporter keeps serving with
 `ubuntu_pro_updates_exporter_up` set to 0. It never crashes on a degraded host.
 
+CVE metrics use `u.pro.security.cves.v1`, which exists since pro client 35
+and downloads Canonical's public vulnerability data, so it needs network
+access and adds a few seconds to each refresh. No subscription is required
+for it either. On an older client the exporter logs one warning and
+disables CVE collection for the life of the process: upgrade the client
+and restart the exporter to enable it. `ubuntu_pro_updates_client_info`
+makes that rollout observable.
+
 ## Metrics
 
 | Metric | Type | Labels | Meaning |
@@ -38,6 +46,8 @@ If the pro client is missing or fails, the exporter keeps serving with
 | `ubuntu_pro_updates_download_bytes` | gauge | `pocket` | Total download size of pending updates |
 | `ubuntu_pro_updates_reboot_required` | gauge | `state` | Reboot required state, encoded as an enum where the active state is 1 |
 | `ubuntu_pro_updates_installed_packages` | gauge | `origin` | Number of installed packages by archive origin |
+| `ubuntu_pro_updates_cves` | gauge | `priority`, `fix_status` | Distinct CVEs affecting installed packages (pro client 35 or newer) |
+| `ubuntu_pro_updates_cve_fixes` | gauge | `origin` | Package-CVE pairs with an unapplied fix, by fix pocket (pro client 35 or newer) |
 | `ubuntu_pro_updates_attached` | gauge | | 1 if the host is attached to an Ubuntu Pro subscription |
 | `ubuntu_pro_updates_client_info` | gauge | `version` | Installed pro client version |
 | `ubuntu_pro_updates_list_snapshot_timestamp_seconds` | gauge | `list` | Unix time of the newest logged snapshot per on-change list |
@@ -57,6 +67,13 @@ at 0 when empty, so alerts never have to deal with absent series.
   pending but Livepatch covers the running kernel)
 - `origin` on `installed_packages`: `main`, `universe`, `multiverse`,
   `restricted`, `esm-apps`, `esm-infra`, `third-party`, `unknown`
+- `priority`: the Ubuntu CVE priorities `negligible`, `low`, `medium`,
+  `high`, `critical`
+- `fix_status`: `fixed` (a fix exists that the host has not applied),
+  `vulnerable` (no fix released) and `unknown` (not triaged); a CVE
+  affecting several packages counts once, under its most actionable status
+- `origin` on `cve_fixes`: `security`, `updates`, `esm-apps`, `esm-infra`
+  (the esm pockets need an Ubuntu Pro subscription)
 
 There is deliberately no total gauge. The sum of `ubuntu_pro_updates_pending`
 equals the `num_updates` field of the API, and a gauge named `*_total` would
@@ -91,13 +108,14 @@ Instead, run with `--log.package-updates` (ideally combined with
 exporter logs one summary entry plus one entry per update with package,
 version, pocket and status. The metrics tell you that updates are pending
 and how many, the log tells you which. The same pattern powers
-`--log.installed-packages`: the inventory manifest, giving the log store a
-package history to look back on (for example when checking which hosts
-carried a version a CVE later turned out to affect).
+`--log.installed-packages` (the inventory manifest), `--log.cves` (pairs
+with an unapplied fix) and `--log.cves-in-effect` (pairs with no fix
+released, at or above `--log.cves-min-priority`, so operators can mitigate
+in the meantime; untriaged CVEs are not logged).
 
 Per-item entries keep every line small (journald truncates lines around
-48KiB) and make the log store queryable line by line: filter by package or
-version, or turn the entries of one host into a table. Every entry
+48KiB) and make the log store queryable line by line: filter by package,
+CVE or priority, or turn the entries of one host into a table. Every entry
 of a snapshot carries the same `snapshot` field, and the newest snapshot
 time per list is exported as
 `ubuntu_pro_updates_list_snapshot_timestamp_seconds{list=...}` - so a
@@ -140,9 +158,13 @@ attached.
 | `--pro.binary` | `pro` | Ubuntu Pro client executable |
 | `--pro.timeout` | `30s` | Timeout per `pro api` invocation |
 | `--pro.refresh-interval` | `12h` | How often to refresh data from the pro client |
+| `--pro.cves` | `true` | Collect CVE metrics (needs pro client 35 or newer and network access) |
 | `--log.format` | `text` | `text` or `json` |
 | `--log.package-updates` | `false` | Log the pending update list when it changes |
 | `--log.installed-packages` | `false` | Log the installed-package manifest when it changes |
+| `--log.cves` | `false` | Log the fixable package-CVE pairs when they change |
+| `--log.cves-in-effect` | `false` | Also log the in-effect (no fix released) pairs when they change |
+| `--log.cves-min-priority` | `high` | Minimum Ubuntu CVE priority for the in-effect log |
 | `--version` | | Print version and exit |
 
 Update data is refreshed by a background loop every `--pro.refresh-interval`.

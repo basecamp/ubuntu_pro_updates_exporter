@@ -23,6 +23,7 @@ const (
 	rebootRequiredEndpoint  = "u.pro.security.status.reboot_required.v1"
 	packageSummaryEndpoint  = "u.pro.packages.summary.v1"
 	packageManifestEndpoint = "u.security.package_manifest.v1"
+	cvesEndpoint            = "u.pro.security.cves.v1"
 	isAttachedEndpoint      = "u.pro.status.is_attached.v1"
 	versionEndpoint         = "u.pro.version.v1"
 )
@@ -56,6 +57,15 @@ var PackageOrigins = []string{
 	"third-party",
 	"unknown",
 }
+
+// CVEPriorities lists the Ubuntu CVE priority values.
+var CVEPriorities = []string{"negligible", "low", "medium", "high", "critical"}
+
+// CVEFixStatuses lists every value a package-CVE pair's fix_status can take.
+var CVEFixStatuses = []string{"fixed", "vulnerable", "unknown"}
+
+// FixOrigins lists the pockets a CVE fix can come from.
+var FixOrigins = []string{"security", "updates", "esm-apps", "esm-infra"}
 
 // Summary mirrors data.attributes.summary of u.pro.packages.updates.v1.
 type Summary struct {
@@ -112,12 +122,44 @@ type InstalledPackage struct {
 	Version string `json:"version"`
 }
 
+// CVEFix is one package-CVE pair from u.pro.security.cves.v1: whether and
+// where a fix exists for this CVE in this package. FixVersion and FixOrigin
+// are empty when no fix has been released (fix_status "vulnerable" or
+// "unknown").
+type CVEFix struct {
+	Name       string `json:"name"`
+	FixVersion string `json:"fix_version"`
+	FixStatus  string `json:"fix_status"`
+	FixOrigin  string `json:"fix_origin"`
+}
+
+// CVEPackage is the CVE view of one installed package.
+type CVEPackage struct {
+	CurrentVersion string   `json:"current_version"`
+	CVEs           []CVEFix `json:"cves"`
+}
+
+// CVEInfo carries the fields of a CVE's shared metadata that the exporter
+// consumes.
+type CVEInfo struct {
+	Priority string `json:"priority"`
+}
+
+// CVEData mirrors data.attributes of u.pro.security.cves.v1: packages maps
+// installed package names to their affecting CVEs, and CVEs holds each CVE's
+// metadata once.
+type CVEData struct {
+	Packages map[string]CVEPackage `json:"packages"`
+	CVEs     map[string]CVEInfo    `json:"cves"`
+}
+
 // Client fetches update status from the Ubuntu Pro client.
 type Client interface {
 	PackageUpdates(ctx context.Context) (*PackageUpdates, error)
 	RebootRequired(ctx context.Context) (*RebootRequired, error)
 	InstalledSummary(ctx context.Context) (*InstalledSummary, error)
 	PackageManifest(ctx context.Context) ([]InstalledPackage, error)
+	CVEs(ctx context.Context) (*CVEData, error)
 	IsAttached(ctx context.Context) (bool, error)
 	ClientVersion(ctx context.Context) (string, error)
 }
@@ -248,6 +290,22 @@ func (c *ExecClient) PackageManifest(ctx context.Context) ([]InstalledPackage, e
 	return packages, nil
 }
 
+// CVEs returns the CVEs affecting installed packages, evaluated by the pro
+// client against Canonical's public vulnerability data. The endpoint exists
+// since pro client 35 (check with IsUnsupported) and needs network access to
+// refresh its data feed, so a call can take several seconds.
+func (c *ExecClient) CVEs(ctx context.Context) (*CVEData, error) {
+	attrs, err := c.api(ctx, cvesEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	var data CVEData
+	if err := json.Unmarshal(attrs, &data); err != nil {
+		return nil, fmt.Errorf("parsing %s attributes: %w", cvesEndpoint, err)
+	}
+	return &data, nil
+}
+
 // IsAttached reports whether the host is attached to an Ubuntu Pro
 // subscription.
 func (c *ExecClient) IsAttached(ctx context.Context) (bool, error) {
@@ -277,6 +335,14 @@ func (c *ExecClient) ClientVersion(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("parsing %s attributes: %w", versionEndpoint, err)
 	}
 	return wrapper.InstalledVersion, nil
+}
+
+// IsUnsupported reports whether err means the installed pro client does not
+// provide the requested endpoint (an older client), as opposed to the
+// endpoint failing.
+func IsUnsupported(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Code == "api-invalid-endpoint"
 }
 
 // api invokes `pro api <endpoint>` and returns data.attributes.
