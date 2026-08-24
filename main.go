@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -54,10 +55,24 @@ func run() int {
 				"packages are installed.")
 		logFormat = flag.String("log.format", "text",
 			"Log format: text or json.")
+		collectCVEs = flag.Bool("pro.cves", true,
+			"Collect CVE metrics via u.pro.security.cves.v1. Needs pro client 35 or newer and "+
+				"network access; on an older client the exporter warns once and disables CVE "+
+				"collection. Restart the exporter after upgrading the client.")
 		logPackages = flag.Bool("log.package-updates", false,
 			"Log the full list of pending package updates whenever it changes.")
 		logInstalled = flag.Bool("log.installed-packages", false,
 			"Log the installed-package manifest whenever it changes.")
+		logCVEs = flag.Bool("log.cves", false,
+			"Log the package-CVE pairs affecting installed packages whenever they change; "+
+				"shaped by log.cves-statuses and log.cves-priorities.")
+		logCVEsStatuses = flag.String("log.cves-statuses", "fixed,vulnerable,unknown",
+			"Fix statuses the CVE log includes, comma separated: fixed (a fix exists the host "+
+				"has not applied), vulnerable (no fix released) and unknown (fix availability "+
+				"undetermined).")
+		logCVEsPriorities = flag.String("log.cves-priorities", "high,critical",
+			"Ubuntu CVE priorities the CVE log includes, comma separated: "+
+				"negligible, low, medium, high, critical.")
 		printVersion = flag.Bool("version", false,
 			"Print version and exit.")
 	)
@@ -75,6 +90,19 @@ func run() int {
 		return 2
 	}
 
+	cveStatuses, err := parseListFlag("log.cves-statuses", *logCVEsStatuses,
+		"fixed", "vulnerable", "unknown")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	cvePriorities, err := parseListFlag("log.cves-priorities", *logCVEsPriorities,
+		"negligible", "low", "medium", "high", "critical")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
 	if _, err := exec.LookPath(*proBinary); err != nil {
 		// Not fatal: the exporter still serves ubuntu_pro_updates_exporter_up 0,
 		// so a fleet-wide rollout can observe hosts lacking the pro client.
@@ -84,8 +112,12 @@ func run() int {
 
 	client := proclient.NewExecClient(*proBinary, *proTimeout)
 	col := collector.New(client, logger, collector.Options{
+		CollectCVEs:          *collectCVEs,
 		LogPackageUpdates:    *logPackages,
 		LogInstalledPackages: *logInstalled,
+		LogCVEs:              *logCVEs,
+		LogCVEsStatuses:      cveStatuses,
+		LogCVEsPriorities:    cvePriorities,
 	})
 
 	reg := prometheus.NewRegistry()
@@ -139,6 +171,33 @@ func run() int {
 		}
 	}
 	return 0
+}
+
+// parseListFlag splits a comma-separated flag value and rejects anything
+// outside the allowed values. List flags are the exporter's standard filter
+// shape: a boolean log.* flag enables a log, a list flag picks the values
+// it includes.
+func parseListFlag(name, value string, allowed ...string) ([]string, error) {
+	if value == "" {
+		return nil, nil
+	}
+	var values []string
+	for _, v := range strings.Split(value, ",") {
+		v = strings.TrimSpace(v)
+		ok := false
+		for _, a := range allowed {
+			if v == a {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil, fmt.Errorf("unknown %s value %q (want a comma-separated subset of %s)",
+				name, v, strings.Join(allowed, ", "))
+		}
+		values = append(values, v)
+	}
+	return values, nil
 }
 
 func newLogger(format string) (*slog.Logger, error) {
