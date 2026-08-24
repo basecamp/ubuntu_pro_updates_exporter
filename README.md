@@ -50,6 +50,7 @@ makes that rollout observable.
 | `ubuntu_pro_updates_cve_fixes` | gauge | `origin` | Package-CVE pairs with an unapplied fix, by fix pocket (pro client 35 or newer) |
 | `ubuntu_pro_updates_attached` | gauge | | 1 if the host is attached to an Ubuntu Pro subscription |
 | `ubuntu_pro_updates_client_info` | gauge | `version` | Installed pro client version |
+| `ubuntu_pro_updates_list_snapshot_timestamp_seconds` | gauge | `list` | Unix time of the newest logged snapshot per on-change list |
 | `ubuntu_pro_updates_exporter_last_success_timestamp_seconds` | gauge | | Unix time of the last successful refresh, absent until one succeeds |
 | `ubuntu_pro_updates_exporter_query_duration_seconds` | gauge | | Time spent querying the pro client during the last refresh |
 | `ubuntu_pro_updates_exporter_build_info` | gauge | `version`, `revision`, `goversion` | Build information |
@@ -104,17 +105,23 @@ kind of data.
 
 Instead, run with `--log.package-updates` (ideally combined with
 `--log.format=json`). Whenever the set of pending updates changes, the
-exporter logs the full list with package, version, pocket and status. Ship
-that to your log store and join on hostname and time. The metrics tell you
-that updates are pending and how many, the log tells you which. The same
-pattern powers `--log.installed-packages` (the inventory manifest),
-`--log.cves` (pairs with an unapplied fix) and `--log.cves-in-effect`
-(pairs with no fix released, at or above `--log.cves-min-priority`, so
-operators can mitigate in the meantime; untriaged CVEs are not logged).
+exporter logs one summary entry plus one entry per update with package,
+version, pocket and status. The metrics tell you that updates are pending
+and how many, the log tells you which. The same pattern powers
+`--log.installed-packages` (the inventory manifest), `--log.cves` (pairs
+with an unapplied fix) and `--log.cves-in-effect` (pairs with no fix
+released, at or above `--log.cves-min-priority`, so operators can mitigate
+in the meantime; untriaged CVEs are not logged).
 
-Large lists are emitted in chunks of 200 items so entries survive
-journald's line-length limit: the entries of one change share a `change`
-id and carry `part`/`parts` numbering for reassembly in the log store.
+Per-item entries keep every line small (journald truncates lines around
+48KiB) and make the log store queryable line by line: filter by package,
+CVE or priority, or turn the entries of one host into a table. Every entry
+of a snapshot carries the same `snapshot` field, and the newest snapshot
+time per list is exported as
+`ubuntu_pro_updates_list_snapshot_timestamp_seconds{list=...}` - so a
+dashboard resolves that gauge for a host and filters the log entries with
+`snapshot` equal to it to show exactly the current list, including
+removals.
 
 ## Installing
 

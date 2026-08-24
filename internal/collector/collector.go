@@ -5,7 +5,6 @@ package collector
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -23,10 +22,6 @@ const namespace = "ubuntu_pro_updates"
 // exporterSubsystem prefixes the metrics about the exporter itself, keeping
 // them apart from the domain metrics.
 const exporterSubsystem = "exporter"
-
-// logChunkSize bounds one log entry's list payload so entries survive
-// journald's line limit (about 48KiB) intact. A var so tests can shrink it.
-var logChunkSize = 200
 
 type pocketStatus struct {
 	pocket, status string
@@ -122,6 +117,7 @@ type Collector struct {
 	cveFixes          *prometheus.Desc
 	attached          *prometheus.Desc
 	clientInfo        *prometheus.Desc
+	listSnapshot      *prometheus.Desc
 	lastSuccess       *prometheus.Desc
 	queryDuration     *prometheus.Desc
 
@@ -134,17 +130,21 @@ type Collector struct {
 	loggedInstalled [32]byte // fingerprint of the last logged manifest
 	loggedFixable   [32]byte // fingerprint of the last logged fixable set
 	loggedInEffect  [32]byte // fingerprint of the last logged in-effect set
-	cveUnsupported  bool
+	// listSnapshots records, per list, the snapshot timestamp of the newest
+	// logged change; it anchors dashboards to exactly the latest list.
+	listSnapshots  map[string]int64
+	cveUnsupported bool
 }
 
 // New returns a Collector reading from client. Call Run (or Refresh) to
 // populate it; until then it serves only ubuntu_pro_updates_exporter_up 0.
 func New(client proclient.Client, logger *slog.Logger, opts Options) *Collector {
 	return &Collector{
-		client: client,
-		logger: logger,
-		opts:   opts,
-		now:    time.Now,
+		client:        client,
+		logger:        logger,
+		opts:          opts,
+		now:           time.Now,
+		listSnapshots: make(map[string]int64),
 		up: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, exporterSubsystem, "up"),
 			"Whether the last refresh of package updates from the Ubuntu Pro client succeeded.",
@@ -186,6 +186,12 @@ func New(client proclient.Client, logger *slog.Logger, opts Options) *Collector 
 			prometheus.BuildFQName(namespace, "", "client_info"),
 			"Installed Ubuntu Pro client version. CVE metrics need version 35 or newer.",
 			[]string{"version"}, nil),
+		listSnapshot: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "list_snapshot_timestamp_seconds"),
+			"Unix time of the newest logged snapshot per on-change list; every log line of "+
+				"that snapshot carries the same value in its snapshot field, anchoring dashboards "+
+				"to exactly the latest list. Absent until a list first logs.",
+			[]string{"list"}, nil),
 		lastSuccess: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, exporterSubsystem, "last_success_timestamp_seconds"),
 			"Unix time of the last successful package-updates refresh; absent until one succeeds.",
@@ -330,6 +336,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.cveFixes
 	ch <- c.attached
 	ch <- c.clientInfo
+	ch <- c.listSnapshot
 	ch <- c.lastSuccess
 	ch <- c.queryDuration
 }
@@ -341,11 +348,19 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.mu.Lock()
 	snap := c.snap
+	listSnapshots := make(map[string]int64, len(c.listSnapshots))
+	for list, ts := range c.listSnapshots {
+		listSnapshots[list] = ts
+	}
 	c.mu.Unlock()
 
 	if !snap.refreshed {
 		ch <- prometheus.MustNewConstMetric(c.up, prometheus.GaugeValue, 0)
 		return
+	}
+
+	for list, ts := range listSnapshots {
+		ch <- prometheus.MustNewConstMetric(c.listSnapshot, prometheus.GaugeValue, float64(ts), list)
 	}
 
 	ch <- prometheus.MustNewConstMetric(c.queryDuration, prometheus.GaugeValue, snap.duration)
@@ -499,44 +514,27 @@ func (c *Collector) collectCVEs(ch chan<- prometheus.Metric, data *proclient.CVE
 }
 
 // maybeLog fingerprints lines and reports whether the set changed since the
-// last time this fingerprint slot logged, along with a short change id that
-// ties the chunked entries of one change together.
-func (c *Collector) maybeLog(slot *[32]byte, lines []string) (bool, string) {
+// last time this fingerprint slot logged. On a change it also records the
+// snapshot timestamp for the list, so the list-snapshot gauge and the log
+// lines carry the same anchor value.
+func (c *Collector) maybeLog(slot *[32]byte, list string, ts int64, lines []string) bool {
 	sort.Strings(lines)
 	fingerprint := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if fingerprint == *slot {
-		return false, ""
+		return false
 	}
 	*slot = fingerprint
-	return true, hex.EncodeToString(fingerprint[:4])
+	c.listSnapshots[list] = ts
+	return true
 }
 
-// logList emits one log entry per chunk of logChunkSize items, so large lists
-// survive journald's line limit. Entries of the same change share the change
-// id and carry part/parts numbering for reassembly in the log store.
-func logList[T any](logger *slog.Logger, msg, changeID, totalKey string, total int, listKey string, items []T) {
-	parts := (len(items) + logChunkSize - 1) / logChunkSize
-	if parts == 0 {
-		parts = 1
-	}
-	for i := 0; i < parts; i++ {
-		lo := i * logChunkSize
-		hi := min(lo+logChunkSize, len(items))
-		logger.Info(msg,
-			"change", changeID,
-			"part", i+1,
-			"parts", parts,
-			totalKey, total,
-			listKey, items[lo:hi])
-	}
-}
-
-// maybeLogUpdates logs the full pending-update list when it changes, giving
-// operators the per-package detail that would be too high-cardinality as
-// labeled metrics.
+// maybeLogUpdates logs the pending updates when the set changes: one summary
+// entry plus one entry per update, each line small enough for journald and
+// each carrying the same snapshot timestamp. Filtering the log store on
+// snapshot = the list-snapshot gauge value yields exactly the current list.
 func (c *Collector) maybeLogUpdates(pu *proclient.PackageUpdates) {
 	if !c.opts.LogPackageUpdates {
 		return
@@ -546,13 +544,19 @@ func (c *Collector) maybeLogUpdates(pu *proclient.PackageUpdates) {
 	for _, u := range pu.Updates {
 		lines = append(lines, fmt.Sprintf("%s %s %s %s", u.Package, u.Version, u.ProvidedBy, u.Status))
 	}
-	changed, id := c.maybeLog(&c.loggedUpdates, lines)
-	if !changed {
+	ts := c.now().Unix()
+	if !c.maybeLog(&c.loggedUpdates, "pending", ts, lines) {
 		return
 	}
 
-	logList(c.logger, "pending package updates changed", id,
-		"num_updates", len(pu.Updates), "updates", pu.Updates)
+	c.logger.Info("pending package updates changed", "snapshot", ts, "num_updates", len(pu.Updates))
+	for _, u := range pu.Updates {
+		c.logger.Info("pending package update", "snapshot", ts,
+			"package", u.Package,
+			"version", u.Version,
+			"pocket", u.ProvidedBy,
+			"status", u.Status)
+	}
 }
 
 // maybeLogInstalled logs the installed-package manifest when it changes, so
@@ -562,13 +566,17 @@ func (c *Collector) maybeLogInstalled(manifest []proclient.InstalledPackage) {
 	for _, p := range manifest {
 		lines = append(lines, p.Package+" "+p.Version)
 	}
-	changed, id := c.maybeLog(&c.loggedInstalled, lines)
-	if !changed {
+	ts := c.now().Unix()
+	if !c.maybeLog(&c.loggedInstalled, "installed", ts, lines) {
 		return
 	}
 
-	logList(c.logger, "installed packages changed", id,
-		"num_installed", len(manifest), "packages", manifest)
+	c.logger.Info("installed packages changed", "snapshot", ts, "num_installed", len(manifest))
+	for _, p := range manifest {
+		c.logger.Info("installed package", "snapshot", ts,
+			"package", p.Package,
+			"version", p.Version)
+	}
 }
 
 type cveFixLogEntry struct {
@@ -612,13 +620,20 @@ func (c *Collector) maybeLogFixableCVEs(data *proclient.CVEData) {
 	for _, f := range fixes {
 		lines = append(lines, f.Package+" "+f.CVE+" "+f.FixVersion)
 	}
-	changed, id := c.maybeLog(&c.loggedFixable, lines)
-	if !changed {
+	ts := c.now().Unix()
+	if !c.maybeLog(&c.loggedFixable, "cves-fixable", ts, lines) {
 		return
 	}
 
-	logList(c.logger, "fixable CVEs changed", id,
-		"num_fixes", len(fixes), "fixes", fixes)
+	c.logger.Info("fixable CVEs changed", "snapshot", ts, "num_fixes", len(fixes))
+	for _, f := range fixes {
+		c.logger.Info("fixable cve", "snapshot", ts,
+			"package", f.Package,
+			"cve", f.CVE,
+			"priority", f.Priority,
+			"fix_version", f.FixVersion,
+			"fix_origin", f.FixOrigin)
+	}
 }
 
 type cveInEffectLogEntry struct {
@@ -666,11 +681,16 @@ func (c *Collector) maybeLogInEffectCVEs(data *proclient.CVEData) {
 	for _, p := range pairs {
 		lines = append(lines, p.Package+" "+p.CVE)
 	}
-	changed, id := c.maybeLog(&c.loggedInEffect, lines)
-	if !changed {
+	ts := c.now().Unix()
+	if !c.maybeLog(&c.loggedInEffect, "cves-in-effect", ts, lines) {
 		return
 	}
 
-	logList(c.logger, "in-effect CVEs changed", id,
-		"num_cves", len(pairs), "cves", pairs)
+	c.logger.Info("in-effect CVEs changed", "snapshot", ts, "num_cves", len(pairs))
+	for _, p := range pairs {
+		c.logger.Info("in-effect cve", "snapshot", ts,
+			"package", p.Package,
+			"cve", p.CVE,
+			"priority", p.Priority)
+	}
 }

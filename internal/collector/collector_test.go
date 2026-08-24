@@ -170,6 +170,7 @@ var allFamilyNames = []string{
 	"ubuntu_pro_updates_cve_fixes",
 	"ubuntu_pro_updates_attached",
 	"ubuntu_pro_updates_client_info",
+	"ubuntu_pro_updates_list_snapshot_timestamp_seconds",
 	"ubuntu_pro_updates_exporter_last_success_timestamp_seconds",
 	"ubuntu_pro_updates_exporter_query_duration_seconds",
 }
@@ -374,45 +375,49 @@ func logRecords(t *testing.T, buf *bytes.Buffer, msg string) []map[string]any {
 	return records
 }
 
-func TestChunkedLogging(t *testing.T) {
-	old := logChunkSize
-	logChunkSize = 2
-	defer func() { logChunkSize = old }()
-
+func TestPerItemLoggingWithSnapshotAnchor(t *testing.T) {
 	var buf bytes.Buffer
 	fake := healthyFake()
 	fake.manifest = []proclient.InstalledPackage{
 		{Package: "a", Version: "1"},
-		{Package: "b", Version: "1"},
-		{Package: "c", Version: "1"},
-		{Package: "d", Version: "1"},
-		{Package: "e", Version: "1"},
+		{Package: "b", Version: "2"},
+		{Package: "c", Version: "3"},
 	}
 	c := captureCollector(fake, Options{LogInstalledPackages: true}, &buf)
 	c.Refresh(context.Background())
 
-	records := logRecords(t, &buf, "installed packages changed")
-	// 5 items in chunks of 2 = 3 parts, all sharing one change id.
-	if len(records) != 3 {
-		t.Fatalf("got %d log entries, want 3", len(records))
+	// One summary entry plus one entry per package, all sharing the snapshot
+	// timestamp of the fixed clock.
+	summaries := logRecords(t, &buf, "installed packages changed")
+	if len(summaries) != 1 || summaries[0]["num_installed"] != float64(3) {
+		t.Fatalf("summaries = %+v, want one with num_installed 3", summaries)
 	}
-	change := records[0]["change"]
-	for i, record := range records {
-		if record["change"] != change {
-			t.Errorf("entry %d change = %v, want %v", i, record["change"], change)
+	items := logRecords(t, &buf, "installed package")
+	if len(items) != 3 {
+		t.Fatalf("got %d item entries, want 3", len(items))
+	}
+	for i, item := range items {
+		if item["snapshot"] != float64(1700000000) {
+			t.Errorf("item %d snapshot = %v, want 1700000000", i, item["snapshot"])
 		}
-		if record["parts"] != float64(3) || record["part"] != float64(i+1) {
-			t.Errorf("entry %d part/parts = %v/%v, want %d/3", i, record["part"], record["parts"], i+1)
+		if item["package"] == nil || item["version"] == nil {
+			t.Errorf("item %d missing package/version fields: %+v", i, item)
 		}
-		if record["num_installed"] != float64(5) {
-			t.Errorf("entry %d num_installed = %v, want 5", i, record["num_installed"])
-		}
+	}
+
+	// The list-snapshot gauge anchors dashboards to the same value.
+	if err := testutil.CollectAndCompare(c, strings.NewReader(`
+# HELP ubuntu_pro_updates_list_snapshot_timestamp_seconds Unix time of the newest logged snapshot per on-change list; every log line of that snapshot carries the same value in its snapshot field, anchoring dashboards to exactly the latest list. Absent until a list first logs.
+# TYPE ubuntu_pro_updates_list_snapshot_timestamp_seconds gauge
+ubuntu_pro_updates_list_snapshot_timestamp_seconds{list="installed"} 1.7e+09
+`), "ubuntu_pro_updates_list_snapshot_timestamp_seconds"); err != nil {
+		t.Error(err)
 	}
 
 	// A second refresh with the same data logs nothing new.
 	buf.Reset()
 	c.Refresh(context.Background())
-	if records := logRecords(t, &buf, "installed packages changed"); len(records) != 0 {
+	if records := logRecords(t, &buf, "installed package"); len(records) != 0 {
 		t.Errorf("unchanged manifest logged %d entries, want 0", len(records))
 	}
 }
@@ -426,16 +431,19 @@ func TestInEffectCVELogRespectsMinPriority(t *testing.T) {
 	c := captureCollector(fake, Options{CollectCVEs: true, LogCVEsInEffect: true, LogCVEsMinPriority: "high"}, &buf)
 	c.Refresh(context.Background())
 
-	records := logRecords(t, &buf, "in-effect CVEs changed")
-	if len(records) != 1 {
-		t.Fatalf("got %d log entries, want 1", len(records))
+	summaries := logRecords(t, &buf, "in-effect CVEs changed")
+	if len(summaries) != 1 || summaries[0]["num_cves"] != float64(1) {
+		t.Fatalf("summaries = %+v, want one with num_cves 1", summaries)
 	}
-	if records[0]["num_cves"] != float64(1) {
-		t.Errorf("num_cves = %v, want 1", records[0]["num_cves"])
+	items := logRecords(t, &buf, "in-effect cve")
+	if len(items) != 1 {
+		t.Fatalf("got %d item entries, want 1", len(items))
 	}
-	out := buf.String()
-	if !strings.Contains(out, "CVE-2024-0001") || strings.Contains(out, "CVE-2024-0003") {
-		t.Errorf("expected only the critical pair in the log, got: %s", out)
+	if items[0]["cve"] != "CVE-2024-0001" || items[0]["priority"] != "critical" {
+		t.Errorf("item = %+v, want the critical CVE-2024-0001 pair", items[0])
+	}
+	if strings.Contains(buf.String(), "CVE-2024-0003") {
+		t.Errorf("low-priority pair leaked into the log: %s", buf.String())
 	}
 }
 
