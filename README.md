@@ -174,7 +174,7 @@ attached.
 | `--web.listen-address` | `:10052` | Address to expose metrics on |
 | `--web.telemetry-path` | `/metrics` | Metrics path |
 | `--pro.binary` | `pro` | Ubuntu Pro client executable |
-| `--pro.timeout` | `30s` | Timeout per `pro api` invocation |
+| `--pro.timeout` | `10m` | Timeout per `pro api` invocation |
 | `--pro.refresh-interval` | `12h` | How often to refresh data from the pro client |
 | `--pro.cves` | `true` | Collect CVE metrics (needs pro client 35 or newer and network access) |
 | `--log.format` | `text` | `text` or `json` |
@@ -215,8 +215,13 @@ exit codes or English text, and surfaces the error codes of the envelope
 itself.
 
 Collection is decoupled from serving. A single `pro api` walk of the apt
-cache costs seconds of CPU, which would make every scrape slow and let
-concurrent scrapes pile up pro processes. The background loop refreshes the
+cache costs seconds of CPU, and on pro client 37 the updates query costs
+roughly another 0.6s of CPU per pending update (the client re-opens the
+apt cache for each update it classifies), so a host far behind on patches
+can spend minutes per refresh. That would make every scrape slow and let
+concurrent scrapes pile up pro processes; it is also why `--pro.timeout`
+defaults to a generous 10 minutes. The refresh happens in the background,
+so the cost is CPU only, never scrape latency. The background loop refreshes the
 data instead, and scrapes serve the cached snapshot. The default interval of
 12 hours mirrors the cadence of apt-daily, whose timer runs twice a day and
 refreshes package lists at most once per day. When a refresh fails, the

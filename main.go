@@ -46,8 +46,11 @@ func run() int {
 			"Path under which to expose metrics.")
 		proBinary = flag.String("pro.binary", "pro",
 			"Ubuntu Pro client executable, resolved via $PATH unless it contains a slash.")
-		proTimeout = flag.Duration("pro.timeout", 30*time.Second,
-			"Timeout for a single pro api invocation.")
+		proTimeout = flag.Duration("pro.timeout", 10*time.Minute,
+			"Timeout for a single pro api invocation. The default is sized for pro client 37, "+
+				"whose updates query costs roughly 0.6s of CPU per pending update on top of a "+
+				"few seconds of base work; the refresh runs in the background, so a long call "+
+				"never delays a scrape.")
 		refreshInterval = flag.Duration("pro.refresh-interval", 12*time.Hour,
 			"How often to refresh update data from the pro client; scrapes serve the cached result. "+
 				"The default matches apt-daily's own cadence (twice a day, refreshing lists at most "+
