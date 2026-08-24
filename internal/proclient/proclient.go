@@ -19,8 +19,13 @@ import (
 )
 
 const (
-	packageUpdatesEndpoint = "u.pro.packages.updates.v1"
-	rebootRequiredEndpoint = "u.pro.security.status.reboot_required.v1"
+	packageUpdatesEndpoint  = "u.pro.packages.updates.v1"
+	rebootRequiredEndpoint  = "u.pro.security.status.reboot_required.v1"
+	packageSummaryEndpoint  = "u.pro.packages.summary.v1"
+	packageManifestEndpoint = "u.security.package_manifest.v1"
+	cvesEndpoint            = "u.pro.security.cves.v1"
+	isAttachedEndpoint      = "u.pro.status.is_attached.v1"
+	versionEndpoint         = "u.pro.version.v1"
 )
 
 // Pockets lists every value the pro client emits as an update's provided_by
@@ -40,6 +45,27 @@ var Statuses = []string{
 
 // RebootStates lists every value reboot_required can take.
 var RebootStates = []string{"no", "yes", "yes-kernel-livepatches-applied"}
+
+// PackageOrigins lists the origins the installed-package summary counts by.
+var PackageOrigins = []string{
+	"main",
+	"universe",
+	"multiverse",
+	"restricted",
+	"esm-apps",
+	"esm-infra",
+	"third-party",
+	"unknown",
+}
+
+// CVEPriorities lists the Ubuntu CVE priority values.
+var CVEPriorities = []string{"negligible", "low", "medium", "high", "critical"}
+
+// CVEFixStatuses lists every value a package-CVE pair's fix_status can take.
+var CVEFixStatuses = []string{"fixed", "vulnerable", "unknown"}
+
+// FixOrigins lists the pockets a CVE fix can come from.
+var FixOrigins = []string{"security", "updates", "esm-apps", "esm-infra"}
 
 // Summary mirrors data.attributes.summary of u.pro.packages.updates.v1.
 type Summary struct {
@@ -74,10 +100,68 @@ type RebootRequired struct {
 	RebootRequired string `json:"reboot_required"`
 }
 
+// InstalledSummary mirrors data.attributes.summary of u.pro.packages.summary.v1.
+type InstalledSummary struct {
+	NumInstalledPackages  int `json:"num_installed_packages"`
+	NumMainPackages       int `json:"num_main_packages"`
+	NumUniversePackages   int `json:"num_universe_packages"`
+	NumMultiversePackages int `json:"num_multiverse_packages"`
+	NumRestrictedPackages int `json:"num_restricted_packages"`
+	NumESMAppsPackages    int `json:"num_esm_apps_packages"`
+	NumESMInfraPackages   int `json:"num_esm_infra_packages"`
+	NumThirdPartyPackages int `json:"num_third_party_packages"`
+	NumUnknownPackages    int `json:"num_unknown_packages"`
+}
+
+// InstalledPackage is one entry of the u.security.package_manifest.v1 data,
+// the manifest format Ubuntu's CVE tooling consumes. Package keeps the
+// manifest's name verbatim, which may carry an architecture suffix
+// (e.g. "othertool:amd64").
+type InstalledPackage struct {
+	Package string `json:"package"`
+	Version string `json:"version"`
+}
+
+// CVEFix is one package-CVE pair from u.pro.security.cves.v1: whether and
+// where a fix exists for this CVE in this package. FixVersion and FixOrigin
+// are empty when no fix has been released (fix_status "vulnerable" or
+// "unknown").
+type CVEFix struct {
+	Name       string `json:"name"`
+	FixVersion string `json:"fix_version"`
+	FixStatus  string `json:"fix_status"`
+	FixOrigin  string `json:"fix_origin"`
+}
+
+// CVEPackage is the CVE view of one installed package.
+type CVEPackage struct {
+	CurrentVersion string   `json:"current_version"`
+	CVEs           []CVEFix `json:"cves"`
+}
+
+// CVEInfo carries the fields of a CVE's shared metadata that the exporter
+// consumes.
+type CVEInfo struct {
+	Priority string `json:"priority"`
+}
+
+// CVEData mirrors data.attributes of u.pro.security.cves.v1: packages maps
+// installed package names to their affecting CVEs, and CVEs holds each CVE's
+// metadata once.
+type CVEData struct {
+	Packages map[string]CVEPackage `json:"packages"`
+	CVEs     map[string]CVEInfo    `json:"cves"`
+}
+
 // Client fetches update status from the Ubuntu Pro client.
 type Client interface {
 	PackageUpdates(ctx context.Context) (*PackageUpdates, error)
 	RebootRequired(ctx context.Context) (*RebootRequired, error)
+	InstalledSummary(ctx context.Context) (*InstalledSummary, error)
+	PackageManifest(ctx context.Context) ([]InstalledPackage, error)
+	CVEs(ctx context.Context) (*CVEData, error)
+	IsAttached(ctx context.Context) (bool, error)
+	ClientVersion(ctx context.Context) (string, error)
 }
 
 // APIError is a failure reported inside a pro api JSON envelope
@@ -163,6 +247,102 @@ func (c *ExecClient) RebootRequired(ctx context.Context) (*RebootRequired, error
 		return nil, fmt.Errorf("parsing %s attributes: %w", rebootRequiredEndpoint, err)
 	}
 	return &rr, nil
+}
+
+// InstalledSummary returns counts of installed packages by origin.
+func (c *ExecClient) InstalledSummary(ctx context.Context) (*InstalledSummary, error) {
+	attrs, err := c.api(ctx, packageSummaryEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Summary InstalledSummary `json:"summary"`
+	}
+	if err := json.Unmarshal(attrs, &wrapper); err != nil {
+		return nil, fmt.Errorf("parsing %s attributes: %w", packageSummaryEndpoint, err)
+	}
+	return &wrapper.Summary, nil
+}
+
+// PackageManifest returns the installed-package inventory. The manifest_data
+// field is a machine-stable tab-separated "package<TAB>version" list, the
+// format Ubuntu's CVE scanners consume.
+func (c *ExecClient) PackageManifest(ctx context.Context) ([]InstalledPackage, error) {
+	attrs, err := c.api(ctx, packageManifestEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		ManifestData string `json:"manifest_data"`
+	}
+	if err := json.Unmarshal(attrs, &wrapper); err != nil {
+		return nil, fmt.Errorf("parsing %s attributes: %w", packageManifestEndpoint, err)
+	}
+
+	var packages []InstalledPackage
+	for _, line := range strings.Split(wrapper.ManifestData, "\n") {
+		name, version, found := strings.Cut(strings.TrimSpace(line), "\t")
+		if !found || name == "" {
+			continue
+		}
+		packages = append(packages, InstalledPackage{Package: name, Version: version})
+	}
+	return packages, nil
+}
+
+// CVEs returns the CVEs affecting installed packages, evaluated by the pro
+// client against Canonical's public vulnerability data. The endpoint exists
+// since pro client 35 (check with IsUnsupported) and needs network access to
+// refresh its data feed, so a call can take several seconds.
+func (c *ExecClient) CVEs(ctx context.Context) (*CVEData, error) {
+	attrs, err := c.api(ctx, cvesEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	var data CVEData
+	if err := json.Unmarshal(attrs, &data); err != nil {
+		return nil, fmt.Errorf("parsing %s attributes: %w", cvesEndpoint, err)
+	}
+	return &data, nil
+}
+
+// IsAttached reports whether the host is attached to an Ubuntu Pro
+// subscription.
+func (c *ExecClient) IsAttached(ctx context.Context) (bool, error) {
+	attrs, err := c.api(ctx, isAttachedEndpoint)
+	if err != nil {
+		return false, err
+	}
+	var wrapper struct {
+		IsAttached bool `json:"is_attached"`
+	}
+	if err := json.Unmarshal(attrs, &wrapper); err != nil {
+		return false, fmt.Errorf("parsing %s attributes: %w", isAttachedEndpoint, err)
+	}
+	return wrapper.IsAttached, nil
+}
+
+// ClientVersion returns the installed pro client version.
+func (c *ExecClient) ClientVersion(ctx context.Context) (string, error) {
+	attrs, err := c.api(ctx, versionEndpoint)
+	if err != nil {
+		return "", err
+	}
+	var wrapper struct {
+		InstalledVersion string `json:"installed_version"`
+	}
+	if err := json.Unmarshal(attrs, &wrapper); err != nil {
+		return "", fmt.Errorf("parsing %s attributes: %w", versionEndpoint, err)
+	}
+	return wrapper.InstalledVersion, nil
+}
+
+// IsUnsupported reports whether err means the installed pro client does not
+// provide the requested endpoint (an older client), as opposed to the
+// endpoint failing.
+func IsUnsupported(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Code == "api-invalid-endpoint"
 }
 
 // api invokes `pro api <endpoint>` and returns data.attributes.

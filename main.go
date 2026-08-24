@@ -54,8 +54,16 @@ func run() int {
 				"packages are installed.")
 		logFormat = flag.String("log.format", "text",
 			"Log format: text or json.")
+		collectCVEs = flag.Bool("pro.cves", true,
+			"Collect CVE metrics via u.pro.security.cves.v1. Needs pro client 35 or newer and "+
+				"network access; on older clients the exporter warns once and the metrics appear "+
+				"automatically after the client is upgraded.")
 		logPackages = flag.Bool("log.package-updates", false,
 			"Log the full list of pending package updates whenever it changes.")
+		logInstalled = flag.Bool("log.installed-packages", false,
+			"Log the installed-package manifest whenever it changes.")
+		logCVEs = flag.Bool("log.cves", false,
+			"Log the fixable package-CVE pairs whenever they change.")
 		printVersion = flag.Bool("version", false,
 			"Print version and exit.")
 	)
@@ -74,14 +82,19 @@ func run() int {
 	}
 
 	if _, err := exec.LookPath(*proBinary); err != nil {
-		// Not fatal: the exporter still serves ubuntu_pro_updates_exporter_up 0, so a
+		// Not fatal: the exporter still serves ubuntu_pro_updates_up 0, so a
 		// fleet-wide rollout can observe hosts lacking the pro client.
-		logger.Warn("ubuntu pro client not found, ubuntu_pro_updates_exporter_up will be 0",
+		logger.Warn("ubuntu pro client not found, ubuntu_pro_updates_up will be 0",
 			"binary", *proBinary, "err", err)
 	}
 
 	client := proclient.NewExecClient(*proBinary, *proTimeout)
-	col := collector.New(client, logger, *logPackages)
+	col := collector.New(client, logger, collector.Options{
+		CollectCVEs:          *collectCVEs,
+		LogPackageUpdates:    *logPackages,
+		LogInstalledPackages: *logInstalled,
+		LogCVEs:              *logCVEs,
+	})
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(

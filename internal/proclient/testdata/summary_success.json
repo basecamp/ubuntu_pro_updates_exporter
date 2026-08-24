@@ -1,0 +1,26 @@
+{
+  "_schema_version": "v1",
+  "data": {
+    "attributes": {
+      "summary": {
+        "num_esm_apps_packages": 0,
+        "num_esm_infra_packages": 0,
+        "num_installed_packages": 100,
+        "num_main_packages": 80,
+        "num_multiverse_packages": 0,
+        "num_restricted_packages": 0,
+        "num_third_party_packages": 2,
+        "num_universe_packages": 12,
+        "num_unknown_packages": 6
+      }
+    },
+    "meta": {
+      "environment_vars": []
+    },
+    "type": "PackageSummary"
+  },
+  "errors": [],
+  "result": "success",
+  "version": "37.2ubuntu~22.04.1",
+  "warnings": []
+}
