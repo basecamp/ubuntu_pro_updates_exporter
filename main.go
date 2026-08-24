@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -63,12 +64,15 @@ func run() int {
 		logInstalled = flag.Bool("log.installed-packages", false,
 			"Log the installed-package manifest whenever it changes.")
 		logCVEs = flag.Bool("log.cves", false,
-			"Log the fixable package-CVE pairs whenever they change.")
-		logCVEsInEffect = flag.Bool("log.cves-in-effect", false,
-			"Also log the in-effect package-CVE pairs (no fix released yet) whenever they change, "+
-				"at or above log.cves-min-priority, so operators can mitigate in the meantime.")
-		logCVEsMinPriority = flag.String("log.cves-min-priority", "high",
-			"Minimum Ubuntu CVE priority for the in-effect CVE log: negligible, low, medium, high or critical.")
+			"Log the package-CVE pairs affecting installed packages whenever they change; "+
+				"shaped by log.cves-statuses and log.cves-priorities.")
+		logCVEsStatuses = flag.String("log.cves-statuses", "fixed,vulnerable,unknown",
+			"Fix statuses the CVE log includes, comma separated: fixed (a fix exists the host "+
+				"has not applied), vulnerable (no fix released) and unknown (fix availability "+
+				"undetermined).")
+		logCVEsPriorities = flag.String("log.cves-priorities", "high,critical",
+			"Ubuntu CVE priorities the CVE log includes, comma separated: "+
+				"negligible, low, medium, high, critical.")
 		printVersion = flag.Bool("version", false,
 			"Print version and exit.")
 	)
@@ -86,10 +90,16 @@ func run() int {
 		return 2
 	}
 
-	switch *logCVEsMinPriority {
-	case "negligible", "low", "medium", "high", "critical":
-	default:
-		fmt.Fprintf(os.Stderr, "unknown log.cves-min-priority %q (want negligible, low, medium, high or critical)\n", *logCVEsMinPriority)
+	cveStatuses, err := parseListFlag("log.cves-statuses", *logCVEsStatuses,
+		"fixed", "vulnerable", "unknown")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	cvePriorities, err := parseListFlag("log.cves-priorities", *logCVEsPriorities,
+		"negligible", "low", "medium", "high", "critical")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 
@@ -106,8 +116,8 @@ func run() int {
 		LogPackageUpdates:    *logPackages,
 		LogInstalledPackages: *logInstalled,
 		LogCVEs:              *logCVEs,
-		LogCVEsInEffect:      *logCVEsInEffect,
-		LogCVEsMinPriority:   *logCVEsMinPriority,
+		LogCVEsStatuses:      cveStatuses,
+		LogCVEsPriorities:    cvePriorities,
 	})
 
 	reg := prometheus.NewRegistry()
@@ -161,6 +171,33 @@ func run() int {
 		}
 	}
 	return 0
+}
+
+// parseListFlag splits a comma-separated flag value and rejects anything
+// outside the allowed values. List flags are the exporter's standard filter
+// shape: a boolean log.* flag enables a log, a list flag picks the values
+// it includes.
+func parseListFlag(name, value string, allowed ...string) ([]string, error) {
+	if value == "" {
+		return nil, nil
+	}
+	var values []string
+	for _, v := range strings.Split(value, ",") {
+		v = strings.TrimSpace(v)
+		ok := false
+		for _, a := range allowed {
+			if v == a {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil, fmt.Errorf("unknown %s value %q (want a comma-separated subset of %s)",
+				name, v, strings.Join(allowed, ", "))
+		}
+		values = append(values, v)
+	}
+	return values, nil
 }
 
 func newLogger(format string) (*slog.Logger, error) {

@@ -70,8 +70,9 @@ at 0 when empty, so alerts never have to deal with absent series.
 - `priority`: the Ubuntu CVE priorities `negligible`, `low`, `medium`,
   `high`, `critical`
 - `fix_status`: `fixed` (a fix exists that the host has not applied),
-  `vulnerable` (no fix released) and `unknown` (not triaged); a CVE
-  affecting several packages counts once, under its most actionable status
+  `vulnerable` (no fix released) and `unknown` (fix availability not
+  determined for the package); a CVE affecting several packages counts
+  once, under its most actionable status
 - `origin` on `cve_fixes`: `security`, `updates`, `esm-apps`, `esm-infra`
   (the esm pockets need an Ubuntu Pro subscription)
 
@@ -108,10 +109,27 @@ Instead, run with `--log.package-updates` (ideally combined with
 exporter logs one summary entry plus one entry per update with package,
 version, pocket and status. The metrics tell you that updates are pending
 and how many, the log tells you which. The same pattern powers
-`--log.installed-packages` (the inventory manifest), `--log.cves` (pairs
-with an unapplied fix) and `--log.cves-in-effect` (pairs with no fix
-released, at or above `--log.cves-min-priority`, so operators can mitigate
-in the meantime; untriaged CVEs are not logged).
+`--log.installed-packages` (the inventory manifest) and `--log.cves` (the
+package-CVE pairs affecting installed packages).
+
+Every log follows the same flag shape: a boolean `--log.*` flag enables
+it, and where a log supports filtering, the filter is a comma-separated
+list of the values to include, with a sane default. The CVE log has two
+such filters. `--log.cves-statuses` picks the fix statuses: `fixed` means
+a fix exists that the host has not applied (the action is upgrading, and
+the entry names the version and pocket), `vulnerable` means the exposure
+is confirmed with no fix released, and `unknown` means Canonical has not
+determined fix availability for that package (the action for those two is
+mitigating; a dashboard splits them from the fixed entries on the
+`fix_status` field). The unknown bucket is typically the largest and
+partly reflects gaps in the vulnerability data (for example `-dbg` and
+`-dev` packages that are not tracked individually), so dropping it from
+the default `fixed,vulnerable,unknown` is the low-noise choice.
+`--log.cves-priorities` bounds the volume by Ubuntu CVE priority and
+defaults to `high,critical`; the full list of fixable packages regardless
+of priority is already what `--log.package-updates` provides. CVEs
+without a triaged priority never reach the log; they stay visible in the
+aggregate metrics.
 
 Per-item entries keep every line small (journald truncates lines around
 48KiB) and make the log store queryable line by line: filter by package,
@@ -162,9 +180,9 @@ attached.
 | `--log.format` | `text` | `text` or `json` |
 | `--log.package-updates` | `false` | Log the pending update list when it changes |
 | `--log.installed-packages` | `false` | Log the installed-package manifest when it changes |
-| `--log.cves` | `false` | Log the fixable package-CVE pairs when they change |
-| `--log.cves-in-effect` | `false` | Also log the in-effect (no fix released) pairs when they change |
-| `--log.cves-min-priority` | `high` | Minimum Ubuntu CVE priority for the in-effect log |
+| `--log.cves` | `false` | Log the package-CVE pairs affecting installed packages when they change |
+| `--log.cves-statuses` | `fixed,vulnerable,unknown` | Fix statuses the CVE log includes |
+| `--log.cves-priorities` | `high,critical` | Ubuntu CVE priorities the CVE log includes |
 | `--version` | | Print version and exit |
 
 Update data is refreshed by a background loop every `--pro.refresh-interval`.

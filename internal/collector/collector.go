@@ -31,23 +31,13 @@ type cveBucket struct {
 	priority, status string
 }
 
-// priorityRank orders the Ubuntu CVE priorities; unknown or untriaged
-// priorities rank below negligible.
-func priorityRank(priority string) int {
-	switch priority {
-	case "negligible":
-		return 0
-	case "low":
-		return 1
-	case "medium":
-		return 2
-	case "high":
-		return 3
-	case "critical":
-		return 4
-	default:
-		return -1
+// toSet turns a list-flag value into a membership set.
+func toSet(values []string) map[string]bool {
+	set := make(map[string]bool, len(values))
+	for _, v := range values {
+		set[v] = true
 	}
+	return set
 }
 
 // Options selects the optional collections and logs.
@@ -62,16 +52,17 @@ type Options struct {
 	// LogInstalledPackages logs the installed-package manifest whenever it
 	// changes.
 	LogInstalledPackages bool
-	// LogCVEs logs the fixable package-CVE pairs whenever they change.
+	// LogCVEs logs the package-CVE pairs whenever they change; LogCVEsStatuses
+	// and LogCVEsPriorities shape what is included.
 	LogCVEs bool
-	// LogCVEsInEffect also logs the in-effect package-CVE pairs (the host is
-	// affected and no fix has been released) whenever they change, so
-	// operators can mitigate while a fix is pending. Untriaged CVEs are not
-	// logged.
-	LogCVEsInEffect bool
-	// LogCVEsMinPriority is the minimum Ubuntu CVE priority for the
-	// in-effect log: negligible, low, medium, high or critical.
-	LogCVEsMinPriority string
+	// LogCVEsStatuses lists the fix statuses the CVE log includes: "fixed"
+	// (a fix exists the host has not applied), "vulnerable" (the exposure
+	// is confirmed and no fix has been released) and "unknown" (fix
+	// availability has not been determined for the package).
+	LogCVEsStatuses []string
+	// LogCVEsPriorities lists the Ubuntu CVE priorities the CVE log
+	// includes: negligible, low, medium, high, critical.
+	LogCVEsPriorities []string
 }
 
 // snapshot is the cached result of one refresh cycle. Detail fields are nil
@@ -128,8 +119,7 @@ type Collector struct {
 	snap            snapshot
 	loggedUpdates   [32]byte // fingerprint of the last logged update set
 	loggedInstalled [32]byte // fingerprint of the last logged manifest
-	loggedFixable   [32]byte // fingerprint of the last logged fixable set
-	loggedInEffect  [32]byte // fingerprint of the last logged in-effect set
+	loggedCVEs      [32]byte // fingerprint of the last logged CVE pair set
 	// listSnapshots records, per list, the snapshot timestamp of the newest
 	// logged change; it anchors dashboards to exactly the latest list.
 	listSnapshots  map[string]int64
@@ -286,8 +276,7 @@ func (c *Collector) Refresh(ctx context.Context) {
 		c.maybeLogInstalled(manifest)
 	}
 	if cves != nil {
-		c.maybeLogFixableCVEs(cves)
-		c.maybeLogInEffectCVEs(cves)
+		c.maybeLogCVEs(cves)
 	}
 }
 
@@ -579,94 +568,46 @@ func (c *Collector) maybeLogInstalled(manifest []proclient.InstalledPackage) {
 	}
 }
 
-type cveFixLogEntry struct {
+type cveLogEntry struct {
 	Package    string `json:"package"`
 	CVE        string `json:"cve"`
 	Priority   string `json:"priority"`
+	FixStatus  string `json:"fix_status"`
 	FixVersion string `json:"fix_version"`
 	FixOrigin  string `json:"fix_origin"`
 }
 
-// maybeLogFixableCVEs logs the fixable package-CVE pairs when they change:
-// the direct action here is applying the fix.
-func (c *Collector) maybeLogFixableCVEs(data *proclient.CVEData) {
+// maybeLogCVEs logs the package-CVE pairs whose fix status and priority are
+// configured for inclusion, whenever the set changes. An entry with fix
+// status fixed names the version and pocket to upgrade to; vulnerable
+// (confirmed, no fix released) and unknown (fix availability not determined
+// for the package) entries are the ones to mitigate. Pairs whose CVE has no
+// triaged priority match no configured value and never reach the log, but
+// remain visible in the aggregate metrics.
+func (c *Collector) maybeLogCVEs(data *proclient.CVEData) {
 	if !c.opts.LogCVEs {
 		return
 	}
+	statuses := toSet(c.opts.LogCVEsStatuses)
+	priorities := toSet(c.opts.LogCVEsPriorities)
 
-	var fixes []cveFixLogEntry
+	var pairs []cveLogEntry
 	for name, pkg := range data.Packages {
 		for _, fix := range pkg.CVEs {
-			if fix.FixStatus != "fixed" {
-				continue
-			}
-			fixes = append(fixes, cveFixLogEntry{
-				Package:    name,
-				CVE:        fix.Name,
-				Priority:   data.CVEs[fix.Name].Priority,
-				FixVersion: fix.FixVersion,
-				FixOrigin:  fix.FixOrigin,
-			})
-		}
-	}
-	sort.Slice(fixes, func(i, j int) bool {
-		if fixes[i].Package != fixes[j].Package {
-			return fixes[i].Package < fixes[j].Package
-		}
-		return fixes[i].CVE < fixes[j].CVE
-	})
-
-	lines := make([]string, 0, len(fixes))
-	for _, f := range fixes {
-		lines = append(lines, f.Package+" "+f.CVE+" "+f.FixVersion)
-	}
-	ts := c.now().Unix()
-	if !c.maybeLog(&c.loggedFixable, "cves-fixable", ts, lines) {
-		return
-	}
-
-	c.logger.Info("fixable CVEs changed", "snapshot", ts, "num_fixes", len(fixes))
-	for _, f := range fixes {
-		c.logger.Info("fixable cve", "snapshot", ts,
-			"package", f.Package,
-			"cve", f.CVE,
-			"priority", f.Priority,
-			"fix_version", f.FixVersion,
-			"fix_origin", f.FixOrigin)
-	}
-}
-
-type cveInEffectLogEntry struct {
-	Package  string `json:"package"`
-	CVE      string `json:"cve"`
-	Priority string `json:"priority"`
-}
-
-// maybeLogInEffectCVEs logs the package-CVE pairs the host is exposed to with
-// no released fix, at or above the configured priority, so operators can
-// mitigate in the meantime. Untriaged pairs (unknown fix status or unknown
-// priority) are excluded: there is nothing actionable in them yet, and they
-// remain visible in the aggregate metrics.
-func (c *Collector) maybeLogInEffectCVEs(data *proclient.CVEData) {
-	if !c.opts.LogCVEsInEffect {
-		return
-	}
-	minRank := priorityRank(c.opts.LogCVEsMinPriority)
-
-	var pairs []cveInEffectLogEntry
-	for name, pkg := range data.Packages {
-		for _, fix := range pkg.CVEs {
-			if fix.FixStatus != "vulnerable" {
+			if !statuses[fix.FixStatus] {
 				continue
 			}
 			priority := data.CVEs[fix.Name].Priority
-			if priorityRank(priority) < minRank {
+			if !priorities[priority] {
 				continue
 			}
-			pairs = append(pairs, cveInEffectLogEntry{
-				Package:  name,
-				CVE:      fix.Name,
-				Priority: priority,
+			pairs = append(pairs, cveLogEntry{
+				Package:    name,
+				CVE:        fix.Name,
+				Priority:   priority,
+				FixStatus:  fix.FixStatus,
+				FixVersion: fix.FixVersion,
+				FixOrigin:  fix.FixOrigin,
 			})
 		}
 	}
@@ -679,18 +620,21 @@ func (c *Collector) maybeLogInEffectCVEs(data *proclient.CVEData) {
 
 	lines := make([]string, 0, len(pairs))
 	for _, p := range pairs {
-		lines = append(lines, p.Package+" "+p.CVE)
+		lines = append(lines, p.Package+" "+p.CVE+" "+p.FixStatus+" "+p.FixVersion)
 	}
 	ts := c.now().Unix()
-	if !c.maybeLog(&c.loggedInEffect, "cves-in-effect", ts, lines) {
+	if !c.maybeLog(&c.loggedCVEs, "cves", ts, lines) {
 		return
 	}
 
-	c.logger.Info("in-effect CVEs changed", "snapshot", ts, "num_cves", len(pairs))
+	c.logger.Info("CVEs changed", "snapshot", ts, "num_pairs", len(pairs))
 	for _, p := range pairs {
-		c.logger.Info("in-effect cve", "snapshot", ts,
+		c.logger.Info("cve", "snapshot", ts,
 			"package", p.Package,
 			"cve", p.CVE,
-			"priority", p.Priority)
+			"priority", p.Priority,
+			"fix_status", p.FixStatus,
+			"fix_version", p.FixVersion,
+			"fix_origin", p.FixOrigin)
 	}
 }

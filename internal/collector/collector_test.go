@@ -422,28 +422,88 @@ ubuntu_pro_updates_list_snapshot_timestamp_seconds{list="installed"} 1.7e+09
 	}
 }
 
-func TestInEffectCVELogRespectsMinPriority(t *testing.T) {
+func TestCVELogPriorityFilter(t *testing.T) {
 	var buf bytes.Buffer
 	fake := healthyFake()
-	// libexample: CVE-2024-0003 vulnerable (low); othertool: CVE-2024-0001
-	// vulnerable (critical). With min priority high only the critical pair
-	// may be logged.
-	c := captureCollector(fake, Options{CollectCVEs: true, LogCVEsInEffect: true, LogCVEsMinPriority: "high"}, &buf)
+	// libexample: CVE-2024-0001 fixed (critical), CVE-2024-0003 vulnerable
+	// (low); othertool: CVE-2024-0002 fixed (medium), CVE-2024-0001
+	// vulnerable (critical). With priorities high,critical only the two
+	// critical pairs may be logged.
+	c := captureCollector(fake, Options{CollectCVEs: true, LogCVEs: true,
+		LogCVEsStatuses:   []string{"fixed", "vulnerable", "unknown"},
+		LogCVEsPriorities: []string{"high", "critical"}}, &buf)
 	c.Refresh(context.Background())
 
-	summaries := logRecords(t, &buf, "in-effect CVEs changed")
-	if len(summaries) != 1 || summaries[0]["num_cves"] != float64(1) {
-		t.Fatalf("summaries = %+v, want one with num_cves 1", summaries)
+	summaries := logRecords(t, &buf, "CVEs changed")
+	if len(summaries) != 1 || summaries[0]["num_pairs"] != float64(2) {
+		t.Fatalf("summaries = %+v, want one with num_pairs 2", summaries)
 	}
-	items := logRecords(t, &buf, "in-effect cve")
-	if len(items) != 1 {
-		t.Fatalf("got %d item entries, want 1", len(items))
+	items := logRecords(t, &buf, "cve")
+	if len(items) != 2 {
+		t.Fatalf("got %d item entries, want 2", len(items))
 	}
-	if items[0]["cve"] != "CVE-2024-0001" || items[0]["priority"] != "critical" {
-		t.Errorf("item = %+v, want the critical CVE-2024-0001 pair", items[0])
+	for _, item := range items {
+		if item["cve"] != "CVE-2024-0001" || item["priority"] != "critical" {
+			t.Errorf("item = %+v, want a critical CVE-2024-0001 pair", item)
+		}
+	}
+	// The fixed pair carries the fix, the vulnerable pair does not.
+	byStatus := map[string]map[string]any{}
+	for _, item := range items {
+		byStatus[item["fix_status"].(string)] = item
+	}
+	if byStatus["fixed"]["fix_version"] != "1.0-1ubuntu0.1" || byStatus["fixed"]["fix_origin"] != "security" {
+		t.Errorf("fixed pair = %+v, want fix_version 1.0-1ubuntu0.1 from security", byStatus["fixed"])
+	}
+	if byStatus["vulnerable"]["fix_version"] != "" {
+		t.Errorf("vulnerable pair = %+v, want an empty fix_version", byStatus["vulnerable"])
 	}
 	if strings.Contains(buf.String(), "CVE-2024-0003") {
 		t.Errorf("low-priority pair leaked into the log: %s", buf.String())
+	}
+}
+
+func TestCVELogStatusFilter(t *testing.T) {
+	// othertool gains a pair whose fix availability is undetermined
+	// (fix_status unknown) for the medium CVE-2024-0002.
+	withUnknown := func() *fakeClient {
+		fake := healthyFake()
+		pkg := fake.cveData.Packages["othertool"]
+		pkg.CVEs = append(pkg.CVEs, proclient.CVEFix{Name: "CVE-2024-0002", FixStatus: "unknown"})
+		fake.cveData.Packages["othertool"] = pkg
+		return fake
+	}
+
+	// With only vulnerable configured, the fixed and unknown pairs stay out.
+	var buf bytes.Buffer
+	c := captureCollector(withUnknown(), Options{CollectCVEs: true, LogCVEs: true,
+		LogCVEsStatuses:   []string{"vulnerable"},
+		LogCVEsPriorities: []string{"medium", "high", "critical"}}, &buf)
+	c.Refresh(context.Background())
+	for _, item := range logRecords(t, &buf, "cve") {
+		if item["fix_status"] != "vulnerable" {
+			t.Errorf("unexpected fix_status in vulnerable-only log: %+v", item)
+		}
+	}
+
+	// With unknown included, the pair is logged and labeled.
+	buf.Reset()
+	c = captureCollector(withUnknown(), Options{CollectCVEs: true, LogCVEs: true,
+		LogCVEsStatuses:   []string{"vulnerable", "unknown"},
+		LogCVEsPriorities: []string{"medium", "high", "critical"}}, &buf)
+	c.Refresh(context.Background())
+	items := logRecords(t, &buf, "cve")
+	var found bool
+	for _, item := range items {
+		if item["cve"] == "CVE-2024-0002" && item["fix_status"] == "unknown" && item["package"] == "othertool" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("unknown pair missing from the log, items = %+v", items)
+	}
+	if len(items) != 2 {
+		t.Errorf("got %d item entries, want 2 (the critical vulnerable and the medium unknown pair)", len(items))
 	}
 }
 
