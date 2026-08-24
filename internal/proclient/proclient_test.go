@@ -117,6 +117,63 @@ func TestPackageUpdatesMissingAttributes(t *testing.T) {
 	}
 }
 
+func TestInstalledSummary(t *testing.T) {
+	c := stubClient(t, readTestdata(t, "summary_success.json"), nil, nil)
+
+	s, err := c.InstalledSummary(context.Background())
+	if err != nil {
+		t.Fatalf("InstalledSummary: %v", err)
+	}
+
+	want := InstalledSummary{
+		NumInstalledPackages:  100,
+		NumMainPackages:       80,
+		NumUniversePackages:   12,
+		NumThirdPartyPackages: 2,
+		NumUnknownPackages:    6,
+	}
+	if *s != want {
+		t.Errorf("summary = %+v, want %+v", *s, want)
+	}
+}
+
+func TestPackageManifest(t *testing.T) {
+	c := stubClient(t, readTestdata(t, "manifest_success.json"), nil, nil)
+
+	packages, err := c.PackageManifest(context.Background())
+	if err != nil {
+		t.Fatalf("PackageManifest: %v", err)
+	}
+
+	want := []InstalledPackage{
+		{Package: "libexample", Version: "1.0-1"},
+		{Package: "othertool:amd64", Version: "2.4-2"},
+		{Package: "widgetd", Version: "0.3-2"},
+	}
+	if len(packages) != len(want) {
+		t.Fatalf("len(packages) = %d, want %d", len(packages), len(want))
+	}
+	for i := range want {
+		if packages[i] != want[i] {
+			t.Errorf("packages[%d] = %+v, want %+v", i, packages[i], want[i])
+		}
+	}
+}
+
+func TestIsAttachedAndVersion(t *testing.T) {
+	c := stubClient(t, []byte(`{"result": "success", "data": {"attributes": {"is_attached": false, "contract_status": null}}}`), nil, nil)
+	attached, err := c.IsAttached(context.Background())
+	if err != nil || attached {
+		t.Errorf("IsAttached = %v, %v; want false, nil", attached, err)
+	}
+
+	c = stubClient(t, []byte(`{"result": "success", "data": {"attributes": {"installed_version": "37.2ubuntu~22.04.1"}}}`), nil, nil)
+	version, err := c.ClientVersion(context.Background())
+	if err != nil || version != "37.2ubuntu~22.04.1" {
+		t.Errorf("ClientVersion = %q, %v; want 37.2ubuntu~22.04.1, nil", version, err)
+	}
+}
+
 func TestRebootRequired(t *testing.T) {
 	c := stubClient(t, readTestdata(t, "reboot_required.json"), nil, nil)
 

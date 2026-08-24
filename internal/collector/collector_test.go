@@ -1,7 +1,9 @@
 package collector
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -16,8 +18,12 @@ import (
 
 // fakeClient serves canned responses; a nil field means that call errors.
 type fakeClient struct {
-	updates *proclient.PackageUpdates
-	reboot  *proclient.RebootRequired
+	updates   *proclient.PackageUpdates
+	reboot    *proclient.RebootRequired
+	installed *proclient.InstalledSummary
+	manifest  []proclient.InstalledPackage
+	attached  *bool
+	version   string
 }
 
 func (f *fakeClient) PackageUpdates(context.Context) (*proclient.PackageUpdates, error) {
@@ -32,6 +38,34 @@ func (f *fakeClient) RebootRequired(context.Context) (*proclient.RebootRequired,
 		return nil, errors.New("pro exploded")
 	}
 	return f.reboot, nil
+}
+
+func (f *fakeClient) InstalledSummary(context.Context) (*proclient.InstalledSummary, error) {
+	if f.installed == nil {
+		return nil, errors.New("pro exploded")
+	}
+	return f.installed, nil
+}
+
+func (f *fakeClient) PackageManifest(context.Context) ([]proclient.InstalledPackage, error) {
+	if f.manifest == nil {
+		return nil, errors.New("pro exploded")
+	}
+	return f.manifest, nil
+}
+
+func (f *fakeClient) IsAttached(context.Context) (bool, error) {
+	if f.attached == nil {
+		return false, errors.New("pro exploded")
+	}
+	return *f.attached, nil
+}
+
+func (f *fakeClient) ClientVersion(context.Context) (string, error) {
+	if f.version == "" {
+		return "", errors.New("pro exploded")
+	}
+	return f.version, nil
 }
 
 func testUpdates() *proclient.PackageUpdates {
@@ -52,11 +86,29 @@ func testUpdates() *proclient.PackageUpdates {
 	}
 }
 
+func healthyFake() *fakeClient {
+	attached := false
+	return &fakeClient{
+		updates: testUpdates(),
+		reboot:  &proclient.RebootRequired{RebootRequired: "no"},
+		installed: &proclient.InstalledSummary{
+			NumInstalledPackages:  100,
+			NumMainPackages:       80,
+			NumUniversePackages:   12,
+			NumThirdPartyPackages: 2,
+			NumUnknownPackages:    6,
+		},
+		manifest: []proclient.InstalledPackage{{Package: "libexample", Version: "1.0-1"}},
+		attached: &attached,
+		version:  "37.2ubuntu~22.04.1",
+	}
+}
+
 // newTestCollector fixes the clock so timestamps and durations are
 // deterministic. Tests call Refresh explicitly instead of running the
 // background loop.
 func newTestCollector(client proclient.Client) *Collector {
-	c := New(client, slog.New(slog.NewTextHandler(io.Discard, nil)), false)
+	c := New(client, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{})
 	c.now = func() time.Time { return time.Unix(1700000000, 0) }
 	return c
 }
@@ -72,12 +124,16 @@ var allFamilyNames = []string{
 	"ubuntu_pro_updates_pending",
 	"ubuntu_pro_updates_download_bytes",
 	"ubuntu_pro_updates_reboot_required",
+	"ubuntu_pro_updates_installed_packages",
+	"ubuntu_pro_updates_attached",
+	"ubuntu_pro_updates_client_info",
+	"ubuntu_pro_updates_list_snapshot_timestamp_seconds",
 	"ubuntu_pro_updates_exporter_last_success_timestamp_seconds",
 	"ubuntu_pro_updates_exporter_query_duration_seconds",
 }
 
 func TestCollectBeforeFirstRefresh(t *testing.T) {
-	c := newTestCollector(&fakeClient{updates: testUpdates(), reboot: &proclient.RebootRequired{RebootRequired: "no"}})
+	c := newTestCollector(healthyFake())
 
 	// No Refresh has run: only up 0 may be exported, not even a duration.
 	err := testutil.CollectAndCompare(c, strings.NewReader(allFamiliesAbsentExceptUp), allFamilyNames...)
@@ -87,7 +143,7 @@ func TestCollectBeforeFirstRefresh(t *testing.T) {
 }
 
 func TestCollectSuccess(t *testing.T) {
-	c := newTestCollector(&fakeClient{updates: testUpdates(), reboot: &proclient.RebootRequired{RebootRequired: "no"}})
+	c := newTestCollector(healthyFake())
 	c.Refresh(context.Background())
 
 	expected := `
@@ -127,14 +183,27 @@ ubuntu_pro_updates_download_bytes{pocket="standard-updates"} 25
 ubuntu_pro_updates_reboot_required{state="no"} 1
 ubuntu_pro_updates_reboot_required{state="yes"} 0
 ubuntu_pro_updates_reboot_required{state="yes-kernel-livepatches-applied"} 0
+# HELP ubuntu_pro_updates_installed_packages Number of installed packages, by archive origin.
+# TYPE ubuntu_pro_updates_installed_packages gauge
+ubuntu_pro_updates_installed_packages{origin="esm-apps"} 0
+ubuntu_pro_updates_installed_packages{origin="esm-infra"} 0
+ubuntu_pro_updates_installed_packages{origin="main"} 80
+ubuntu_pro_updates_installed_packages{origin="multiverse"} 0
+ubuntu_pro_updates_installed_packages{origin="restricted"} 0
+ubuntu_pro_updates_installed_packages{origin="third-party"} 2
+ubuntu_pro_updates_installed_packages{origin="universe"} 12
+ubuntu_pro_updates_installed_packages{origin="unknown"} 6
+# HELP ubuntu_pro_updates_attached Whether the host is attached to an Ubuntu Pro subscription.
+# TYPE ubuntu_pro_updates_attached gauge
+ubuntu_pro_updates_attached 0
+# HELP ubuntu_pro_updates_client_info Installed Ubuntu Pro client version.
+# TYPE ubuntu_pro_updates_client_info gauge
+ubuntu_pro_updates_client_info{version="37.2ubuntu~22.04.1"} 1
 # HELP ubuntu_pro_updates_exporter_last_success_timestamp_seconds Unix time of the last successful package-updates refresh; absent until one succeeds.
 # TYPE ubuntu_pro_updates_exporter_last_success_timestamp_seconds gauge
 ubuntu_pro_updates_exporter_last_success_timestamp_seconds 1.7e+09
-# HELP ubuntu_pro_updates_exporter_query_duration_seconds Time spent querying the Ubuntu Pro client during the last refresh.
-# TYPE ubuntu_pro_updates_exporter_query_duration_seconds gauge
-ubuntu_pro_updates_exporter_query_duration_seconds 0
 `
-	err := testutil.CollectAndCompare(c, strings.NewReader(expected), allFamilyNames...)
+	err := testutil.CollectAndCompare(c, strings.NewReader(expected), allFamilyNames[:len(allFamilyNames)-1]...)
 	if err != nil {
 		t.Error(err)
 	}
@@ -144,7 +213,7 @@ func TestCollectProFailure(t *testing.T) {
 	c := newTestCollector(&fakeClient{})
 	c.Refresh(context.Background())
 
-	// Both queries failed: up 0 and a duration; detail families and the
+	// Every query failed: up 0 and a duration; detail families and the
 	// never-succeeded timestamp must be absent.
 	expected := `
 # HELP ubuntu_pro_updates_exporter_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
@@ -160,8 +229,81 @@ ubuntu_pro_updates_exporter_query_duration_seconds 0
 	}
 }
 
+// captureCollector returns a collector whose logs land in buf as JSON lines.
+func captureCollector(client proclient.Client, opts Options, buf *bytes.Buffer) *Collector {
+	c := New(client, slog.New(slog.NewJSONHandler(buf, nil)), opts)
+	c.now = func() time.Time { return time.Unix(1700000000, 0) }
+	return c
+}
+
+// logRecords decodes the captured JSON log lines with the given message.
+func logRecords(t *testing.T, buf *bytes.Buffer, msg string) []map[string]any {
+	t.Helper()
+	var records []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("parsing log line %q: %v", line, err)
+		}
+		if record["msg"] == msg {
+			records = append(records, record)
+		}
+	}
+	return records
+}
+
+func TestPerItemLoggingWithSnapshotAnchor(t *testing.T) {
+	var buf bytes.Buffer
+	fake := healthyFake()
+	fake.manifest = []proclient.InstalledPackage{
+		{Package: "a", Version: "1"},
+		{Package: "b", Version: "2"},
+		{Package: "c", Version: "3"},
+	}
+	c := captureCollector(fake, Options{LogInstalledPackages: true}, &buf)
+	c.Refresh(context.Background())
+
+	// One summary entry plus one entry per package, all sharing the snapshot
+	// timestamp of the fixed clock.
+	summaries := logRecords(t, &buf, "installed packages changed")
+	if len(summaries) != 1 || summaries[0]["num_installed"] != float64(3) {
+		t.Fatalf("summaries = %+v, want one with num_installed 3", summaries)
+	}
+	items := logRecords(t, &buf, "installed package")
+	if len(items) != 3 {
+		t.Fatalf("got %d item entries, want 3", len(items))
+	}
+	for i, item := range items {
+		if item["snapshot"] != float64(1700000000) {
+			t.Errorf("item %d snapshot = %v, want 1700000000", i, item["snapshot"])
+		}
+		if item["package"] == nil || item["version"] == nil {
+			t.Errorf("item %d missing package/version fields: %+v", i, item)
+		}
+	}
+
+	// The list-snapshot gauge anchors dashboards to the same value.
+	if err := testutil.CollectAndCompare(c, strings.NewReader(`
+# HELP ubuntu_pro_updates_list_snapshot_timestamp_seconds Unix time of the newest logged snapshot per on-change list; every log line of that snapshot carries the same value in its snapshot field, anchoring dashboards to exactly the latest list. Absent until a list first logs.
+# TYPE ubuntu_pro_updates_list_snapshot_timestamp_seconds gauge
+ubuntu_pro_updates_list_snapshot_timestamp_seconds{list="installed"} 1.7e+09
+`), "ubuntu_pro_updates_list_snapshot_timestamp_seconds"); err != nil {
+		t.Error(err)
+	}
+
+	// A second refresh with the same data logs nothing new.
+	buf.Reset()
+	c.Refresh(context.Background())
+	if records := logRecords(t, &buf, "installed package"); len(records) != 0 {
+		t.Errorf("unchanged manifest logged %d entries, want 0", len(records))
+	}
+}
+
 func TestLastSuccessSurvivesFailedRefresh(t *testing.T) {
-	fake := &fakeClient{updates: testUpdates(), reboot: &proclient.RebootRequired{RebootRequired: "no"}}
+	fake := healthyFake()
 	c := newTestCollector(fake)
 	c.Refresh(context.Background())
 
@@ -191,13 +333,14 @@ ubuntu_pro_updates_exporter_last_success_timestamp_seconds 1.7e+09
 }
 
 func TestUnknownPocketAndStatusGetSeries(t *testing.T) {
-	pu := &proclient.PackageUpdates{
+	fake := healthyFake()
+	fake.updates = &proclient.PackageUpdates{
 		Summary: proclient.Summary{NumUpdates: 1},
 		Updates: []proclient.Update{
 			{Package: "mystery", Version: "1.0", DownloadSize: 10, ProvidedBy: "esm-shiny", Status: "brand_new_status"},
 		},
 	}
-	c := newTestCollector(&fakeClient{updates: pu, reboot: &proclient.RebootRequired{RebootRequired: "no"}})
+	c := newTestCollector(fake)
 	c.Refresh(context.Background())
 
 	got := testutil.CollectAndCount(c, "ubuntu_pro_updates_pending")
@@ -208,7 +351,7 @@ func TestUnknownPocketAndStatusGetSeries(t *testing.T) {
 }
 
 func TestCollectorLint(t *testing.T) {
-	c := newTestCollector(&fakeClient{updates: testUpdates(), reboot: &proclient.RebootRequired{RebootRequired: "no"}})
+	c := newTestCollector(healthyFake())
 	c.Refresh(context.Background())
 
 	problems, err := testutil.CollectAndLint(c)

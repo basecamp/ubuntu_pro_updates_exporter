@@ -56,6 +56,8 @@ func run() int {
 			"Log format: text or json.")
 		logPackages = flag.Bool("log.package-updates", false,
 			"Log the full list of pending package updates whenever it changes.")
+		logInstalled = flag.Bool("log.installed-packages", false,
+			"Log the installed-package manifest whenever it changes.")
 		printVersion = flag.Bool("version", false,
 			"Print version and exit.")
 	)
@@ -74,14 +76,17 @@ func run() int {
 	}
 
 	if _, err := exec.LookPath(*proBinary); err != nil {
-		// Not fatal: the exporter still serves ubuntu_pro_updates_exporter_up 0, so a
-		// fleet-wide rollout can observe hosts lacking the pro client.
+		// Not fatal: the exporter still serves ubuntu_pro_updates_exporter_up 0,
+		// so a fleet-wide rollout can observe hosts lacking the pro client.
 		logger.Warn("ubuntu pro client not found, ubuntu_pro_updates_exporter_up will be 0",
 			"binary", *proBinary, "err", err)
 	}
 
 	client := proclient.NewExecClient(*proBinary, *proTimeout)
-	col := collector.New(client, logger, *logPackages)
+	col := collector.New(client, logger, collector.Options{
+		LogPackageUpdates:    *logPackages,
+		LogInstalledPackages: *logInstalled,
+	})
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(

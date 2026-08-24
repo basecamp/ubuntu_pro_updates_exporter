@@ -19,16 +19,32 @@ import (
 
 const namespace = "ubuntu_pro_updates"
 
+// exporterSubsystem prefixes the metrics about the exporter itself, keeping
+// them apart from the domain metrics.
+const exporterSubsystem = "exporter"
+
 type pocketStatus struct {
 	pocket, status string
 }
 
-// snapshot is the cached result of one refresh cycle.
+// Options selects the optional collections and logs.
+type Options struct {
+	// LogPackageUpdates logs the full pending-update list whenever it changes.
+	LogPackageUpdates bool
+	// LogInstalledPackages logs the installed-package manifest whenever it
+	// changes.
+	LogInstalledPackages bool
+}
+
+// snapshot is the cached result of one refresh cycle. Detail fields are nil
+// when their query failed, so stale data is dropped rather than served as
+// fresh.
 type snapshot struct {
-	// updates is nil when the last refresh failed; the detail metrics are
-	// then omitted rather than serving stale counts as if they were fresh.
-	updates *proclient.PackageUpdates
-	reboot  *proclient.RebootRequired
+	updates       *proclient.PackageUpdates
+	reboot        *proclient.RebootRequired
+	installed     *proclient.InstalledSummary
+	attached      *bool
+	clientVersion string
 	// ok records whether the last package-updates query succeeded.
 	ok bool
 	// duration is the wall time of the last refresh, in seconds.
@@ -45,40 +61,47 @@ type snapshot struct {
 // Collection is decoupled from serving because the pro client's apt-cache
 // walk takes seconds of CPU per invocation: refreshing on a timer keeps
 // scrapes instant and stops concurrent scrapes from each spawning pro
-// processes. Freshness is governed by the refresh interval and observable
-// via ubuntu_pro_updates_last_success_timestamp_seconds.
+// processes. Freshness is governed by the refresh interval and observable via
+// ubuntu_pro_updates_exporter_last_success_timestamp_seconds.
 type Collector struct {
-	client      proclient.Client
-	logger      *slog.Logger
-	logPackages bool
+	client proclient.Client
+	logger *slog.Logger
+	opts   Options
 
-	up             *prometheus.Desc
-	updatesPending *prometheus.Desc
-	downloadBytes  *prometheus.Desc
-	rebootRequired *prometheus.Desc
-	lastSuccess    *prometheus.Desc
-	queryDuration  *prometheus.Desc
+	up                *prometheus.Desc
+	updatesPending    *prometheus.Desc
+	downloadBytes     *prometheus.Desc
+	rebootRequired    *prometheus.Desc
+	installedPackages *prometheus.Desc
+	attached          *prometheus.Desc
+	clientInfo        *prometheus.Desc
+	listSnapshot      *prometheus.Desc
+	lastSuccess       *prometheus.Desc
+	queryDuration     *prometheus.Desc
 
 	// now allows tests to fix the clock.
 	now func() time.Time
 
-	mu            sync.Mutex
-	snap          snapshot
-	loggedUpdates [32]byte // fingerprint of the last logged package set
+	mu              sync.Mutex
+	snap            snapshot
+	loggedUpdates   [32]byte // fingerprint of the last logged update set
+	loggedInstalled [32]byte // fingerprint of the last logged manifest
+	// listSnapshots records, per list, the snapshot timestamp of the newest
+	// logged change; it anchors dashboards to exactly the latest list.
+	listSnapshots map[string]int64
 }
 
 // New returns a Collector reading from client. Call Run (or Refresh) to
-// populate it; until then it serves only ubuntu_pro_updates_exporter_up 0. If logPackages is
-// true, the full list of pending updates is logged whenever it changes, as
-// the low-cardinality answer to "which packages?" (see the README).
-func New(client proclient.Client, logger *slog.Logger, logPackages bool) *Collector {
+// populate it; until then it serves only ubuntu_pro_updates_exporter_up 0.
+func New(client proclient.Client, logger *slog.Logger, opts Options) *Collector {
 	return &Collector{
-		client:      client,
-		logger:      logger,
-		logPackages: logPackages,
-		now:         time.Now,
+		client:        client,
+		logger:        logger,
+		opts:          opts,
+		now:           time.Now,
+		listSnapshots: make(map[string]int64),
 		up: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "exporter", "up"),
+			prometheus.BuildFQName(namespace, exporterSubsystem, "up"),
 			"Whether the last refresh of package updates from the Ubuntu Pro client succeeded.",
 			nil, nil),
 		updatesPending: prometheus.NewDesc(
@@ -94,12 +117,30 @@ func New(client proclient.Client, logger *slog.Logger, logPackages bool) *Collec
 			"Reboot-required state of the host; the active state has value 1. "+
 				"State yes-kernel-livepatches-applied means a reboot is pending but Livepatch covers the running kernel.",
 			[]string{"state"}, nil),
+		installedPackages: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "installed_packages"),
+			"Number of installed packages, by archive origin.",
+			[]string{"origin"}, nil),
+		attached: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "attached"),
+			"Whether the host is attached to an Ubuntu Pro subscription.",
+			nil, nil),
+		clientInfo: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "client_info"),
+			"Installed Ubuntu Pro client version.",
+			[]string{"version"}, nil),
+		listSnapshot: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "list_snapshot_timestamp_seconds"),
+			"Unix time of the newest logged snapshot per on-change list; every log line of "+
+				"that snapshot carries the same value in its snapshot field, anchoring dashboards "+
+				"to exactly the latest list. Absent until a list first logs.",
+			[]string{"list"}, nil),
 		lastSuccess: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "exporter", "last_success_timestamp_seconds"),
+			prometheus.BuildFQName(namespace, exporterSubsystem, "last_success_timestamp_seconds"),
 			"Unix time of the last successful package-updates refresh; absent until one succeeds.",
 			nil, nil),
 		queryDuration: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "exporter", "query_duration_seconds"),
+			prometheus.BuildFQName(namespace, exporterSubsystem, "query_duration_seconds"),
 			"Time spent querying the Ubuntu Pro client during the last refresh.",
 			nil, nil),
 	}
@@ -121,7 +162,9 @@ func (c *Collector) Run(ctx context.Context, interval time.Duration) {
 }
 
 // Refresh queries the pro client once and replaces the cached snapshot.
-// It never runs during a scrape.
+// It never runs during a scrape. Everything except the package-updates query
+// is best effort: a failure is logged and its metrics omitted, without taking
+// ubuntu_pro_updates_exporter_up down.
 func (c *Collector) Refresh(ctx context.Context) {
 	start := c.now()
 
@@ -130,11 +173,36 @@ func (c *Collector) Refresh(ctx context.Context) {
 		c.logger.Error("querying package updates failed", "err", err)
 	}
 
-	// Reboot state is best effort: its failure is logged but does not take
-	// ubuntu_pro_updates_exporter_up down with it.
 	reboot, rebootErr := c.client.RebootRequired(ctx)
 	if rebootErr != nil {
 		c.logger.Warn("querying reboot-required state failed", "err", rebootErr)
+	}
+
+	installed, installedErr := c.client.InstalledSummary(ctx)
+	if installedErr != nil {
+		c.logger.Warn("querying installed-package summary failed", "err", installedErr)
+	}
+
+	var attached *bool
+	if att, attErr := c.client.IsAttached(ctx); attErr != nil {
+		c.logger.Warn("querying attach status failed", "err", attErr)
+	} else {
+		attached = &att
+	}
+
+	clientVersion, versionErr := c.client.ClientVersion(ctx)
+	if versionErr != nil {
+		c.logger.Warn("querying pro client version failed", "err", versionErr)
+	}
+
+	// The manifest is only used for logging; skip the query when disabled.
+	var manifest []proclient.InstalledPackage
+	if c.opts.LogInstalledPackages {
+		var manifestErr error
+		manifest, manifestErr = c.client.PackageManifest(ctx)
+		if manifestErr != nil {
+			c.logger.Warn("querying package manifest failed", "err", manifestErr)
+		}
 	}
 
 	c.mu.Lock()
@@ -142,6 +210,9 @@ func (c *Collector) Refresh(ctx context.Context) {
 	c.snap.duration = c.now().Sub(start).Seconds()
 	c.snap.updates = updates
 	c.snap.reboot = reboot
+	c.snap.installed = installed
+	c.snap.attached = attached
+	c.snap.clientVersion = clientVersion
 	c.snap.ok = updates != nil
 	if updates != nil {
 		c.snap.lastSuccess = float64(c.now().Unix())
@@ -151,6 +222,9 @@ func (c *Collector) Refresh(ctx context.Context) {
 	if updates != nil {
 		c.maybeLogUpdates(updates)
 	}
+	if manifest != nil {
+		c.maybeLogInstalled(manifest)
+	}
 }
 
 // Describe implements prometheus.Collector.
@@ -159,21 +233,34 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.updatesPending
 	ch <- c.downloadBytes
 	ch <- c.rebootRequired
+	ch <- c.installedPackages
+	ch <- c.attached
+	ch <- c.clientInfo
+	ch <- c.listSnapshot
 	ch <- c.lastSuccess
 	ch <- c.queryDuration
 }
 
 // Collect implements prometheus.Collector. It serves the cached snapshot and
 // must never panic: before the first refresh, or after a failed one, it
-// degrades to ubuntu_pro_updates_exporter_up 0 with the detail metrics absent.
+// degrades to ubuntu_pro_updates_exporter_up 0 with the detail metrics
+// absent.
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.mu.Lock()
 	snap := c.snap
+	listSnapshots := make(map[string]int64, len(c.listSnapshots))
+	for list, ts := range c.listSnapshots {
+		listSnapshots[list] = ts
+	}
 	c.mu.Unlock()
 
 	if !snap.refreshed {
 		ch <- prometheus.MustNewConstMetric(c.up, prometheus.GaugeValue, 0)
 		return
+	}
+
+	for list, ts := range listSnapshots {
+		ch <- prometheus.MustNewConstMetric(c.listSnapshot, prometheus.GaugeValue, float64(ts), list)
 	}
 
 	ch <- prometheus.MustNewConstMetric(c.queryDuration, prometheus.GaugeValue, snap.duration)
@@ -182,6 +269,19 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	}
 	if snap.reboot != nil {
 		c.collectReboot(ch, snap.reboot)
+	}
+	if snap.installed != nil {
+		c.collectInstalled(ch, snap.installed)
+	}
+	if snap.attached != nil {
+		v := 0.0
+		if *snap.attached {
+			v = 1
+		}
+		ch <- prometheus.MustNewConstMetric(c.attached, prometheus.GaugeValue, v)
+	}
+	if snap.clientVersion != "" {
+		ch <- prometheus.MustNewConstMetric(c.clientInfo, prometheus.GaugeValue, 1, snap.clientVersion)
 	}
 	if !snap.ok {
 		ch <- prometheus.MustNewConstMetric(c.up, prometheus.GaugeValue, 0)
@@ -241,11 +341,47 @@ func (c *Collector) collectReboot(ch chan<- prometheus.Metric, rr *proclient.Reb
 	}
 }
 
-// maybeLogUpdates logs the full pending-update list when it changes, giving
-// operators the per-package detail that would be too high-cardinality as
-// labeled metrics.
+func (c *Collector) collectInstalled(ch chan<- prometheus.Metric, s *proclient.InstalledSummary) {
+	counts := map[string]int{
+		"main":        s.NumMainPackages,
+		"universe":    s.NumUniversePackages,
+		"multiverse":  s.NumMultiversePackages,
+		"restricted":  s.NumRestrictedPackages,
+		"esm-apps":    s.NumESMAppsPackages,
+		"esm-infra":   s.NumESMInfraPackages,
+		"third-party": s.NumThirdPartyPackages,
+		"unknown":     s.NumUnknownPackages,
+	}
+	for _, origin := range proclient.PackageOrigins {
+		ch <- prometheus.MustNewConstMetric(c.installedPackages, prometheus.GaugeValue,
+			float64(counts[origin]), origin)
+	}
+}
+
+// maybeLog fingerprints lines and reports whether the set changed since the
+// last time this fingerprint slot logged. On a change it also records the
+// snapshot timestamp for the list, so the list-snapshot gauge and the log
+// lines carry the same anchor value.
+func (c *Collector) maybeLog(slot *[32]byte, list string, ts int64, lines []string) bool {
+	sort.Strings(lines)
+	fingerprint := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if fingerprint == *slot {
+		return false
+	}
+	*slot = fingerprint
+	c.listSnapshots[list] = ts
+	return true
+}
+
+// maybeLogUpdates logs the pending updates when the set changes: one summary
+// entry plus one entry per update, each line small enough for journald and
+// each carrying the same snapshot timestamp. Filtering the log store on
+// snapshot = the list-snapshot gauge value yields exactly the current list.
 func (c *Collector) maybeLogUpdates(pu *proclient.PackageUpdates) {
-	if !c.logPackages {
+	if !c.opts.LogPackageUpdates {
 		return
 	}
 
@@ -253,20 +389,37 @@ func (c *Collector) maybeLogUpdates(pu *proclient.PackageUpdates) {
 	for _, u := range pu.Updates {
 		lines = append(lines, fmt.Sprintf("%s %s %s %s", u.Package, u.Version, u.ProvidedBy, u.Status))
 	}
-	sort.Strings(lines)
-	fingerprint := sha256.Sum256([]byte(strings.Join(lines, "\n")))
-
-	c.mu.Lock()
-	changed := fingerprint != c.loggedUpdates
-	if changed {
-		c.loggedUpdates = fingerprint
-	}
-	c.mu.Unlock()
-	if !changed {
+	ts := c.now().Unix()
+	if !c.maybeLog(&c.loggedUpdates, "pending", ts, lines) {
 		return
 	}
 
-	c.logger.Info("pending package updates changed",
-		"num_updates", len(pu.Updates),
-		"updates", pu.Updates)
+	c.logger.Info("pending package updates changed", "snapshot", ts, "num_updates", len(pu.Updates))
+	for _, u := range pu.Updates {
+		c.logger.Info("pending package update", "snapshot", ts,
+			"package", u.Package,
+			"version", u.Version,
+			"pocket", u.ProvidedBy,
+			"status", u.Status)
+	}
+}
+
+// maybeLogInstalled logs the installed-package manifest when it changes, so
+// the inventory history lives in the log store for CVE lookback.
+func (c *Collector) maybeLogInstalled(manifest []proclient.InstalledPackage) {
+	lines := make([]string, 0, len(manifest))
+	for _, p := range manifest {
+		lines = append(lines, p.Package+" "+p.Version)
+	}
+	ts := c.now().Unix()
+	if !c.maybeLog(&c.loggedInstalled, "installed", ts, lines) {
+		return
+	}
+
+	c.logger.Info("installed packages changed", "snapshot", ts, "num_installed", len(manifest))
+	for _, p := range manifest {
+		c.logger.Info("installed package", "snapshot", ts,
+			"package", p.Package,
+			"version", p.Version)
+	}
 }

@@ -1,0 +1,16 @@
+{
+  "_schema_version": "v1",
+  "data": {
+    "attributes": {
+      "manifest_data": "libexample\t1.0-1\nothertool:amd64\t2.4-2\nwidgetd\t0.3-2\n"
+    },
+    "meta": {
+      "environment_vars": []
+    },
+    "type": "PackageManifest"
+  },
+  "errors": [],
+  "result": "success",
+  "version": "37.2ubuntu~22.04.1",
+  "warnings": []
+}
