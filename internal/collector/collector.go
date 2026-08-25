@@ -569,14 +569,15 @@ func (c *Collector) maybeLogInstalled(manifest []proclient.InstalledPackage) {
 }
 
 type cveLogEntry struct {
-	Package      string   `json:"package"`
-	CVE          string   `json:"cve"`
-	Priority     string   `json:"priority"`
-	FixStatus    string   `json:"fix_status"`
-	FixVersion   string   `json:"fix_version"`
-	FixOrigin    string   `json:"fix_origin"`
-	CVSSScore    *float64 `json:"cvss_score"`
-	CVSSSeverity string   `json:"cvss_severity"`
+	Package        string   `json:"package"`
+	CurrentVersion string   `json:"current_version"`
+	CVE            string   `json:"cve"`
+	Priority       string   `json:"priority"`
+	FixStatus      string   `json:"fix_status"`
+	FixVersion     string   `json:"fix_version"`
+	FixOrigin      string   `json:"fix_origin"`
+	CVSSScore      *float64 `json:"cvss_score"`
+	CVSSSeverity   string   `json:"cvss_severity"`
 }
 
 // maybeLogCVEs logs the package-CVE pairs whose fix status and priority are
@@ -604,14 +605,15 @@ func (c *Collector) maybeLogCVEs(data *proclient.CVEData) {
 				continue
 			}
 			pairs = append(pairs, cveLogEntry{
-				Package:      name,
-				CVE:          fix.Name,
-				Priority:     info.Priority,
-				FixStatus:    fix.FixStatus,
-				FixVersion:   fix.FixVersion,
-				FixOrigin:    fix.FixOrigin,
-				CVSSScore:    info.CVSSScore,
-				CVSSSeverity: info.CVSSSeverity,
+				Package:        name,
+				CurrentVersion: pkg.CurrentVersion,
+				CVE:            fix.Name,
+				Priority:       info.Priority,
+				FixStatus:      fix.FixStatus,
+				FixVersion:     fix.FixVersion,
+				FixOrigin:      fix.FixOrigin,
+				CVSSScore:      info.CVSSScore,
+				CVSSSeverity:   info.CVSSSeverity,
 			})
 		}
 	}
@@ -635,6 +637,7 @@ func (c *Collector) maybeLogCVEs(data *proclient.CVEData) {
 	for _, p := range pairs {
 		args := []any{"snapshot", ts,
 			"package", p.Package,
+			"current_version", p.CurrentVersion,
 			"cve", p.CVE,
 			"priority", p.Priority,
 			"fix_status", p.FixStatus,

@@ -458,6 +458,9 @@ func TestCVELogPriorityFilter(t *testing.T) {
 	if byStatus["fixed"]["fix_version"] != "1.0-1ubuntu0.1" || byStatus["fixed"]["fix_origin"] != "security" {
 		t.Errorf("fixed pair = %+v, want fix_version 1.0-1ubuntu0.1 from security", byStatus["fixed"])
 	}
+	if byStatus["fixed"]["current_version"] != "1.0-1" {
+		t.Errorf("fixed pair = %+v, want current_version 1.0-1", byStatus["fixed"])
+	}
 	if byStatus["vulnerable"]["fix_version"] != "" {
 		t.Errorf("vulnerable pair = %+v, want an empty fix_version", byStatus["vulnerable"])
 	}
