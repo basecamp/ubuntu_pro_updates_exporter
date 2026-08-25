@@ -1,0 +1,49 @@
+# Example Prometheus alerting rules for ubuntu-pro-updates-exporter.
+# Thresholds and durations are starting points; tune them to your fleet.
+groups:
+  - name: ubuntu-pro-updates
+    rules:
+      - alert: UbuntuProExporterDown
+        expr: ubuntu_pro_updates_exporter_up == 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "ubuntu-pro-updates-exporter cannot query the pro client on {{ $labels.instance }}"
+          description: "The exporter is running but its last refresh from the Ubuntu Pro client failed. Check the service logs on the host: journalctl -u ubuntu-pro-updates-exporter"
+
+      - alert: UbuntuProDataStale
+        expr: time() - ubuntu_pro_updates_exporter_last_success_timestamp_seconds > 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "ubuntu-pro-updates-exporter data on {{ $labels.instance }} is stale"
+          description: "No successful refresh for over a day; the metrics no longer reflect the host."
+
+      - alert: UbuntuProSecurityUpdatesBacklog
+        expr: sum by (instance) (ubuntu_pro_updates_pending{pocket="standard-security"}) > 100
+        for: 3d
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} has {{ $value | humanize }} pending security updates"
+          description: "More than 100 pending standard-security updates for 3 days. Plan a patching run."
+
+      - alert: UbuntuProEsmInfraExposure
+        expr: sum by (instance) (ubuntu_pro_updates_pending{pocket="esm-infra", status="pending_attach"}) > 0
+        for: 1d
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} is missing {{ $value | humanize }} esm-infra security fixes"
+          description: "Security fixes exist in the esm-infra pocket that this unattached host cannot install. Normally zero while the OS release is in standard support; a non-zero value means the release aged into ESM-only fixes, or Ubuntu Pro attachment should be considered."
+
+      - alert: UbuntuProRebootRequired
+        expr: ubuntu_pro_updates_reboot_required{state="yes"} == 1
+        for: 7d
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} has needed a reboot for a week"
+          description: "The host has required a reboot (typically for a kernel or core library update) for 7 days. Schedule the reboot."
