@@ -569,12 +569,14 @@ func (c *Collector) maybeLogInstalled(manifest []proclient.InstalledPackage) {
 }
 
 type cveLogEntry struct {
-	Package    string `json:"package"`
-	CVE        string `json:"cve"`
-	Priority   string `json:"priority"`
-	FixStatus  string `json:"fix_status"`
-	FixVersion string `json:"fix_version"`
-	FixOrigin  string `json:"fix_origin"`
+	Package      string   `json:"package"`
+	CVE          string   `json:"cve"`
+	Priority     string   `json:"priority"`
+	FixStatus    string   `json:"fix_status"`
+	FixVersion   string   `json:"fix_version"`
+	FixOrigin    string   `json:"fix_origin"`
+	CVSSScore    *float64 `json:"cvss_score"`
+	CVSSSeverity string   `json:"cvss_severity"`
 }
 
 // maybeLogCVEs logs the package-CVE pairs whose fix status and priority are
@@ -597,17 +599,19 @@ func (c *Collector) maybeLogCVEs(data *proclient.CVEData) {
 			if !statuses[fix.FixStatus] {
 				continue
 			}
-			priority := data.CVEs[fix.Name].Priority
-			if !priorities[priority] {
+			info := data.CVEs[fix.Name]
+			if !priorities[info.Priority] {
 				continue
 			}
 			pairs = append(pairs, cveLogEntry{
-				Package:    name,
-				CVE:        fix.Name,
-				Priority:   priority,
-				FixStatus:  fix.FixStatus,
-				FixVersion: fix.FixVersion,
-				FixOrigin:  fix.FixOrigin,
+				Package:      name,
+				CVE:          fix.Name,
+				Priority:     info.Priority,
+				FixStatus:    fix.FixStatus,
+				FixVersion:   fix.FixVersion,
+				FixOrigin:    fix.FixOrigin,
+				CVSSScore:    info.CVSSScore,
+				CVSSSeverity: info.CVSSSeverity,
 			})
 		}
 	}
@@ -629,12 +633,19 @@ func (c *Collector) maybeLogCVEs(data *proclient.CVEData) {
 
 	c.logger.Info("CVEs changed", "snapshot", ts, "num_pairs", len(pairs))
 	for _, p := range pairs {
-		c.logger.Info("cve", "snapshot", ts,
+		args := []any{"snapshot", ts,
 			"package", p.Package,
 			"cve", p.CVE,
 			"priority", p.Priority,
 			"fix_status", p.FixStatus,
 			"fix_version", p.FixVersion,
-			"fix_origin", p.FixOrigin)
+			"fix_origin", p.FixOrigin,
+		}
+		// CVEs without a CVSS assessment omit the score fields rather than
+		// logging a misleading 0.
+		if p.CVSSScore != nil {
+			args = append(args, "cvss_score", *p.CVSSScore, "cvss_severity", p.CVSSSeverity)
+		}
+		c.logger.Info("cve", args...)
 	}
 }

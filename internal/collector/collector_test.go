@@ -100,11 +100,13 @@ func testUpdates() *proclient.PackageUpdates {
 	}
 }
 
+func f64(v float64) *float64 { return &v }
+
 func testCVEData() *proclient.CVEData {
 	return &proclient.CVEData{
 		CVEs: map[string]proclient.CVEInfo{
-			"CVE-2024-0001": {Priority: "critical"},
-			"CVE-2024-0002": {Priority: "medium"},
+			"CVE-2024-0001": {Priority: "critical", CVSSScore: f64(9.8), CVSSSeverity: "critical"},
+			"CVE-2024-0002": {Priority: "medium", CVSSScore: f64(5.5), CVSSSeverity: "medium"},
 			"CVE-2024-0003": {Priority: "low"},
 		},
 		Packages: map[string]proclient.CVEPackage{
@@ -447,7 +449,8 @@ func TestCVELogPriorityFilter(t *testing.T) {
 			t.Errorf("item = %+v, want a critical CVE-2024-0001 pair", item)
 		}
 	}
-	// The fixed pair carries the fix, the vulnerable pair does not.
+	// The fixed pair carries the fix, the vulnerable pair does not; both
+	// carry the CVSS score of their CVE.
 	byStatus := map[string]map[string]any{}
 	for _, item := range items {
 		byStatus[item["fix_status"].(string)] = item
@@ -457,6 +460,11 @@ func TestCVELogPriorityFilter(t *testing.T) {
 	}
 	if byStatus["vulnerable"]["fix_version"] != "" {
 		t.Errorf("vulnerable pair = %+v, want an empty fix_version", byStatus["vulnerable"])
+	}
+	for status, item := range byStatus {
+		if item["cvss_score"] != 9.8 || item["cvss_severity"] != "critical" {
+			t.Errorf("%s pair = %+v, want cvss_score 9.8 and cvss_severity critical", status, item)
+		}
 	}
 	if strings.Contains(buf.String(), "CVE-2024-0003") {
 		t.Errorf("low-priority pair leaked into the log: %s", buf.String())
@@ -478,11 +486,18 @@ func TestCVELogStatusFilter(t *testing.T) {
 	var buf bytes.Buffer
 	c := captureCollector(withUnknown(), Options{CollectCVEs: true, LogCVEs: true,
 		LogCVEsStatuses:   []string{"vulnerable"},
-		LogCVEsPriorities: []string{"medium", "high", "critical"}}, &buf)
+		LogCVEsPriorities: []string{"low", "medium", "high", "critical"}}, &buf)
 	c.Refresh(context.Background())
 	for _, item := range logRecords(t, &buf, "cve") {
 		if item["fix_status"] != "vulnerable" {
 			t.Errorf("unexpected fix_status in vulnerable-only log: %+v", item)
+		}
+		// CVE-2024-0003 has no CVSS assessment: its pair must omit the
+		// score fields instead of logging a zero.
+		if item["cve"] == "CVE-2024-0003" {
+			if _, ok := item["cvss_score"]; ok {
+				t.Errorf("score-less pair carries cvss_score: %+v", item)
+			}
 		}
 	}
 
