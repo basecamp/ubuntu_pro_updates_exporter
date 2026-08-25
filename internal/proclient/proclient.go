@@ -143,6 +143,10 @@ type CVEPackage struct {
 // consumes.
 type CVEInfo struct {
 	Priority string `json:"priority"`
+	// CVSSScore and CVSSSeverity can be null for CVEs without a CVSS
+	// assessment yet.
+	CVSSScore    *float64 `json:"cvss_score"`
+	CVSSSeverity string   `json:"cvss_severity"`
 }
 
 // CVEData mirrors data.attributes of u.pro.security.cves.v1: packages maps

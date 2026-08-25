@@ -129,7 +129,11 @@ the default `fixed,vulnerable,unknown` is the low-noise choice.
 defaults to `high,critical`; the full list of fixable packages regardless
 of priority is already what `--log.package-updates` provides. CVEs
 without a triaged priority never reach the log; they stay visible in the
-aggregate metrics.
+aggregate metrics. Each entry also carries the installed version the
+pair was evaluated against (`current_version`) and, when Ubuntu's data
+has a CVSS assessment, the CVE's `cvss_score` and `cvss_severity`
+(omitted otherwise), so log queries can rank by score rather than by
+the coarser priority buckets.
 
 Per-item entries keep every line small (journald truncates lines around
 48KiB) and make the log store queryable line by line: filter by package,

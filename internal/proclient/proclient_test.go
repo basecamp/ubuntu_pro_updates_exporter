@@ -174,6 +174,12 @@ func TestCVEs(t *testing.T) {
 	if data.CVEs["CVE-2024-0001"].Priority != "critical" {
 		t.Errorf("CVE-2024-0001 priority = %q, want critical", data.CVEs["CVE-2024-0001"].Priority)
 	}
+	if score := data.CVEs["CVE-2024-0001"].CVSSScore; score == nil || *score != 9.8 {
+		t.Errorf("CVE-2024-0001 cvss_score = %v, want 9.8", score)
+	}
+	if severity := data.CVEs["CVE-2024-0001"].CVSSSeverity; severity != "critical" {
+		t.Errorf("CVE-2024-0001 cvss_severity = %q, want critical", severity)
+	}
 	fix := data.Packages["libexample"].CVEs[0]
 	want := CVEFix{Name: "CVE-2024-0001", FixVersion: "1.0-1ubuntu0.1", FixStatus: "fixed", FixOrigin: "security"}
 	if fix != want {
