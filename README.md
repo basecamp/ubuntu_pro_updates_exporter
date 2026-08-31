@@ -145,6 +145,16 @@ dashboard resolves that gauge for a host and filters the log entries with
 `snapshot` equal to it to show exactly the current list, including
 removals.
 
+Logging only on change would let a log store's retention eventually delete
+the only copy of a list that has not changed in a while, leaving the gauge
+pointing at a snapshot no store holds. So the exporter also re-logs an
+unchanged list as a fresh snapshot once its last snapshot is
+`--log.snapshot-interval` old (default 24h): the current list is then
+always in the store within that window, a dashboard only needs to look
+back that far, and the join on `snapshot` still finds exactly one copy.
+The summary entry carries `changed=false` for these re-logs. The cost is
+one full list per host per interval; `0` restores change-only logging.
+
 ## Installing
 
 Download the static binary for your architecture (linux amd64 or arm64) from
@@ -187,6 +197,7 @@ attached.
 | `--log.cves` | `false` | Log the package-CVE pairs affecting installed packages when they change |
 | `--log.cves-statuses` | `fixed,vulnerable,unknown` | Fix statuses the CVE log includes |
 | `--log.cves-priorities` | `high,critical` | Ubuntu CVE priorities the CVE log includes |
+| `--log.snapshot-interval` | `24h` | Re-log an unchanged list as a fresh snapshot once it is this old (`0` = on change only) |
 | `--version` | | Print version and exit |
 
 Update data is refreshed by a background loop every `--pro.refresh-interval`.

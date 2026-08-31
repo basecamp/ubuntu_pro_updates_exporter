@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -409,7 +410,7 @@ func TestPerItemLoggingWithSnapshotAnchor(t *testing.T) {
 
 	// The list-snapshot gauge anchors dashboards to the same value.
 	if err := testutil.CollectAndCompare(c, strings.NewReader(`
-# HELP ubuntu_pro_updates_list_snapshot_timestamp_seconds Unix time of the newest logged snapshot per on-change list; every log line of that snapshot carries the same value in its snapshot field, anchoring dashboards to exactly the latest list. Absent until a list first logs.
+# HELP ubuntu_pro_updates_list_snapshot_timestamp_seconds Unix time of the newest logged snapshot per list; every log line of that snapshot carries the same value in its snapshot field, anchoring dashboards to exactly the latest list. Absent until a list first logs.
 # TYPE ubuntu_pro_updates_list_snapshot_timestamp_seconds gauge
 ubuntu_pro_updates_list_snapshot_timestamp_seconds{list="installed"} 1.7e+09
 `), "ubuntu_pro_updates_list_snapshot_timestamp_seconds"); err != nil {
@@ -421,6 +422,49 @@ ubuntu_pro_updates_list_snapshot_timestamp_seconds{list="installed"} 1.7e+09
 	c.Refresh(context.Background())
 	if records := logRecords(t, &buf, "installed package"); len(records) != 0 {
 		t.Errorf("unchanged manifest logged %d entries, want 0", len(records))
+	}
+}
+
+func TestSnapshotIntervalRelogsUnchangedList(t *testing.T) {
+	var buf bytes.Buffer
+	fake := healthyFake()
+	fake.manifest = []proclient.InstalledPackage{{Package: "a", Version: "1"}}
+	c := captureCollector(fake, Options{LogInstalledPackages: true, LogSnapshotInterval: 24 * time.Hour}, &buf)
+	now := time.Unix(1700000000, 0)
+	c.now = func() time.Time { return now }
+
+	c.Refresh(context.Background())
+	if items := logRecords(t, &buf, "installed package"); len(items) != 1 || items[0]["snapshot"] != float64(1700000000) {
+		t.Fatalf("first refresh logged %+v, want one entry at snapshot 1700000000", items)
+	}
+
+	// Unchanged and younger than the interval: nothing new.
+	buf.Reset()
+	now = now.Add(12 * time.Hour)
+	c.Refresh(context.Background())
+	if items := logRecords(t, &buf, "installed package"); len(items) != 0 {
+		t.Fatalf("unchanged list re-logged after 12h: %+v", items)
+	}
+
+	// Unchanged but the last snapshot is now a day old: re-logged as a fresh
+	// snapshot, flagged as not a change, and the gauge follows it.
+	buf.Reset()
+	now = now.Add(12 * time.Hour)
+	c.Refresh(context.Background())
+	items := logRecords(t, &buf, "installed package")
+	if len(items) != 1 || items[0]["snapshot"] != float64(now.Unix()) {
+		t.Fatalf("re-log = %+v, want one entry at snapshot %d", items, now.Unix())
+	}
+	summaries := logRecords(t, &buf, "installed packages changed")
+	if len(summaries) != 1 || summaries[0]["changed"] != false {
+		t.Fatalf("summaries = %+v, want one with changed=false", summaries)
+	}
+	if err := testutil.CollectAndCompare(c, strings.NewReader(fmt.Sprintf(`
+# HELP ubuntu_pro_updates_list_snapshot_timestamp_seconds Unix time of the newest logged snapshot per list; every log line of that snapshot carries the same value in its snapshot field, anchoring dashboards to exactly the latest list. Absent until a list first logs.
+# TYPE ubuntu_pro_updates_list_snapshot_timestamp_seconds gauge
+ubuntu_pro_updates_list_snapshot_timestamp_seconds{list="installed"} %d
+`, now.Unix())), "ubuntu_pro_updates_list_snapshot_timestamp_seconds"); err != nil {
+		t.Error(err)
 	}
 }
 

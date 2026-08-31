@@ -76,6 +76,10 @@ func run() int {
 		logCVEsPriorities = flag.String("log.cves-priorities", "high,critical",
 			"Ubuntu CVE priorities the CVE log includes, comma separated: "+
 				"negligible, low, medium, high, critical.")
+		logSnapshotInterval = flag.Duration("log.snapshot-interval", 24*time.Hour,
+			"Re-log an unchanged list as a fresh snapshot once its last snapshot is this old, "+
+				"so a log store with retention always holds the current list; a dashboard "+
+				"then only needs to look back this far. 0 logs on change only.")
 		printVersion = flag.Bool("version", false,
 			"Print version and exit.")
 	)
@@ -121,6 +125,7 @@ func run() int {
 		LogCVEs:              *logCVEs,
 		LogCVEsStatuses:      cveStatuses,
 		LogCVEsPriorities:    cvePriorities,
+		LogSnapshotInterval:  *logSnapshotInterval,
 	})
 
 	reg := prometheus.NewRegistry()
