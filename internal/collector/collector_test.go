@@ -468,6 +468,34 @@ ubuntu_pro_updates_list_snapshot_timestamp_seconds{list="installed"} %d
 	}
 }
 
+func TestSnapshotIntervalDurationResolution(t *testing.T) {
+	// A fractional interval must not be truncated to whole seconds: with a
+	// 90-minute interval and hourly refreshes, the re-log lands on the second
+	// refresh (age 2h), not the first (age 1h, which a truncating comparison
+	// at 5400s would also reject -- guard the sub-interval case explicitly).
+	var buf bytes.Buffer
+	fake := healthyFake()
+	fake.manifest = []proclient.InstalledPackage{{Package: "a", Version: "1"}}
+	c := captureCollector(fake, Options{LogInstalledPackages: true, LogSnapshotInterval: 90 * time.Minute}, &buf)
+	now := time.Unix(1700000000, 0)
+	c.now = func() time.Time { return now }
+	c.Refresh(context.Background())
+
+	buf.Reset()
+	now = now.Add(time.Hour)
+	c.Refresh(context.Background())
+	if items := logRecords(t, &buf, "installed package"); len(items) != 0 {
+		t.Fatalf("re-logged at age 1h with a 90m interval: %+v", items)
+	}
+
+	buf.Reset()
+	now = now.Add(time.Hour)
+	c.Refresh(context.Background())
+	if items := logRecords(t, &buf, "installed package"); len(items) != 1 {
+		t.Fatalf("no re-log at age 2h with a 90m interval: %+v", items)
+	}
+}
+
 func TestCVELogPriorityFilter(t *testing.T) {
 	var buf bytes.Buffer
 	fake := healthyFake()

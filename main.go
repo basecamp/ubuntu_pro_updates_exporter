@@ -78,8 +78,10 @@ func run() int {
 				"negligible, low, medium, high, critical.")
 		logSnapshotInterval = flag.Duration("log.snapshot-interval", 24*time.Hour,
 			"Re-log an unchanged list as a fresh snapshot once its last snapshot is this old, "+
-				"so a log store with retention always holds the current list; a dashboard "+
-				"then only needs to look back this far. 0 logs on change only.")
+				"so a log store with retention always holds the current list. Checked at "+
+				"refresh time, so the effective maximum snapshot age is this interval plus "+
+				"pro.refresh-interval (more if refreshes fail); size dashboard lookback "+
+				"accordingly. 0 logs on change only.")
 		printVersion = flag.Bool("version", false,
 			"Print version and exit.")
 	)

@@ -149,11 +149,16 @@ Logging only on change would let a log store's retention eventually delete
 the only copy of a list that has not changed in a while, leaving the gauge
 pointing at a snapshot no store holds. So the exporter also re-logs an
 unchanged list as a fresh snapshot once its last snapshot is
-`--log.snapshot-interval` old (default 24h): the current list is then
-always in the store within that window, a dashboard only needs to look
-back that far, and the join on `snapshot` still finds exactly one copy.
-The summary entry carries `changed=false` for these re-logs. The cost is
-one full list per host per interval; `0` restores change-only logging.
+`--log.snapshot-interval` old (default 24h). The check runs at refresh
+time, so the effective maximum snapshot age is the snapshot interval plus
+`--pro.refresh-interval` -- with the defaults, 24h + 12h -- and refresh
+failures extend it further, since only a refresh that produced data can
+re-log it. Size the dashboard lookback for that sum plus slack, not for
+the snapshot interval alone. An interval at or below the refresh interval
+simply re-logs on every refresh. The join on `snapshot` still finds
+exactly one copy, and the summary entry carries `changed=false` for these
+re-logs. The cost is one full list per host per interval; `0` restores
+change-only logging.
 
 ## Installing
 

@@ -525,8 +525,11 @@ func (c *Collector) maybeLog(slot *[32]byte, list string, ts int64, lines []stri
 		c.listSnapshots[list] = ts
 		return true, true
 	}
+	// ts > last keeps snapshot ids unique even with a sub-second interval,
+	// and the duration comparison avoids truncating fractional intervals.
 	last, logged := c.listSnapshots[list]
-	if c.opts.LogSnapshotInterval > 0 && logged && ts-last >= int64(c.opts.LogSnapshotInterval.Seconds()) {
+	if c.opts.LogSnapshotInterval > 0 && logged && ts > last &&
+		time.Duration(ts-last)*time.Second >= c.opts.LogSnapshotInterval {
 		c.listSnapshots[list] = ts
 		return true, false
 	}
