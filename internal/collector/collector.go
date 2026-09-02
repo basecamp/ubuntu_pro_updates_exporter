@@ -512,24 +512,17 @@ func (c *Collector) collectCVEs(ch chan<- prometheus.Metric, data *proclient.CVE
 // interval is configured, also once the last snapshot is that old -- so a log
 // store with retention keeps holding the current list even when nothing
 // changes. It owns the snapshot id: the returned snap is recorded for the
-// list, so the list-snapshot gauge and the log lines carry the same anchor
-// value, and it is guaranteed unique per emission for the life of the
-// process. Across a restart, uniqueness rests on wall-clock ordering: a
-// collision would need the restart AND the first completed refresh to fit
-// inside the same unix second as the previous process's last emission,
-// which the pro client's multi-second queries alone rule out -- so no
-// state is persisted for it. changed tells the two cases apart for the
-// summary entry.
+// list and is unique per emission, so the list-snapshot gauge and the log
+// lines carry the same anchor value. changed tells the two cases apart for
+// the summary entry.
 func (c *Collector) maybeLog(slot *[32]byte, list string, ts int64, lines []string) (snap int64, emit, changed bool) {
 	sort.Strings(lines)
 	fingerprint := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Snapshot ids must be unique and strictly advancing even when two
-	// emissions land in the same unix second, so a join on snapshot can never
-	// mix two list versions; bump past the previous id when the clock has
-	// not moved.
+	// A join on snapshot must never mix two list versions: bump past the
+	// previous id when the clock has not advanced.
 	last, logged := c.listSnapshots[list]
 	if logged && ts <= last {
 		ts = last + 1

@@ -469,10 +469,9 @@ ubuntu_pro_updates_list_snapshot_timestamp_seconds{list="installed"} %d
 }
 
 func TestSnapshotIntervalDurationResolution(t *testing.T) {
-	// A fractional interval must not be truncated to whole seconds: with a
-	// 90-minute interval and hourly refreshes, the re-log lands on the second
-	// refresh (age 2h), not the first (age 1h, which a truncating comparison
-	// at 5400s would also reject -- guard the sub-interval case explicitly).
+	// A fractional interval keeps its exact threshold: with a 90-minute
+	// interval and hourly refreshes, the re-log lands on the second refresh
+	// (age 2h), not the first (age 1h).
 	var buf bytes.Buffer
 	fake := healthyFake()
 	fake.manifest = []proclient.InstalledPackage{{Package: "a", Version: "1"}}
@@ -497,8 +496,7 @@ func TestSnapshotIntervalDurationResolution(t *testing.T) {
 }
 
 func TestSnapshotIDsAdvanceWithinOneSecond(t *testing.T) {
-	// Two changed refreshes inside the same unix second must get distinct,
-	// advancing snapshot ids, or a join on snapshot would mix both versions.
+	// Two emissions inside the same unix second still get distinct ids.
 	var buf bytes.Buffer
 	fake := healthyFake()
 	fake.manifest = []proclient.InstalledPackage{{Package: "a", Version: "1"}}
