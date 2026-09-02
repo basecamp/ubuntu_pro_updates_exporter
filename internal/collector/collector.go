@@ -63,6 +63,10 @@ type Options struct {
 	// LogCVEsPriorities lists the Ubuntu CVE priorities the CVE log
 	// includes: negligible, low, medium, high, critical.
 	LogCVEsPriorities []string
+	// LogSnapshotInterval re-logs an unchanged list (as a new snapshot) once
+	// it has gone this long without being logged, so a log store with
+	// retention always holds the current list. Zero logs on change only.
+	LogSnapshotInterval time.Duration
 }
 
 // snapshot is the cached result of one refresh cycle. Detail fields are nil
@@ -120,8 +124,9 @@ type Collector struct {
 	loggedUpdates   [32]byte // fingerprint of the last logged update set
 	loggedInstalled [32]byte // fingerprint of the last logged manifest
 	loggedCVEs      [32]byte // fingerprint of the last logged CVE pair set
-	// listSnapshots records, per list, the snapshot timestamp of the newest
-	// logged change; it anchors dashboards to exactly the latest list.
+	// listSnapshots records, per list, the timestamp of the newest logged
+	// snapshot; it anchors dashboards to exactly the latest list and paces
+	// the periodic re-logging of unchanged lists.
 	listSnapshots  map[string]int64
 	cveUnsupported bool
 }
@@ -178,7 +183,7 @@ func New(client proclient.Client, logger *slog.Logger, opts Options) *Collector 
 			[]string{"version"}, nil),
 		listSnapshot: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "", "list_snapshot_timestamp_seconds"),
-			"Unix time of the newest logged snapshot per on-change list; every log line of "+
+			"Unix time of the newest logged snapshot per list; every log line of "+
 				"that snapshot carries the same value in its snapshot field, anchoring dashboards "+
 				"to exactly the latest list. Absent until a list first logs.",
 			[]string{"list"}, nil),
@@ -502,28 +507,46 @@ func (c *Collector) collectCVEs(ch chan<- prometheus.Metric, data *proclient.CVE
 	}
 }
 
-// maybeLog fingerprints lines and reports whether the set changed since the
-// last time this fingerprint slot logged. On a change it also records the
-// snapshot timestamp for the list, so the list-snapshot gauge and the log
-// lines carry the same anchor value.
-func (c *Collector) maybeLog(slot *[32]byte, list string, ts int64, lines []string) bool {
+// maybeLog fingerprints lines and decides whether the list should be logged
+// now: it emits on a change since the last logged set, and, when a snapshot
+// interval is configured, also once the last snapshot is that old -- so a log
+// store with retention keeps holding the current list even when nothing
+// changes. It owns the snapshot id: the returned snap is recorded for the
+// list and is unique per emission, so the list-snapshot gauge and the log
+// lines carry the same anchor value. changed tells the two cases apart for
+// the summary entry.
+func (c *Collector) maybeLog(slot *[32]byte, list string, ts int64, lines []string) (snap int64, emit, changed bool) {
 	sort.Strings(lines)
 	fingerprint := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if fingerprint == *slot {
-		return false
+	// A join on snapshot must never mix two list versions: bump past the
+	// previous id when the clock has not advanced.
+	last, logged := c.listSnapshots[list]
+	if logged && ts <= last {
+		ts = last + 1
 	}
-	*slot = fingerprint
-	c.listSnapshots[list] = ts
-	return true
+	if fingerprint != *slot {
+		*slot = fingerprint
+		c.listSnapshots[list] = ts
+		return ts, true, true
+	}
+	if c.opts.LogSnapshotInterval > 0 && logged &&
+		time.Duration(ts-last)*time.Second >= c.opts.LogSnapshotInterval {
+		c.listSnapshots[list] = ts
+		return ts, true, false
+	}
+	return 0, false, false
 }
 
 // maybeLogUpdates logs the pending updates when the set changes: one summary
 // entry plus one entry per update, each line small enough for journald and
 // each carrying the same snapshot timestamp. Filtering the log store on
 // snapshot = the list-snapshot gauge value yields exactly the current list.
+// With a snapshot interval, an unchanged list is re-logged as a fresh
+// snapshot once it is that old (see maybeLog); the same applies to the
+// installed-package and CVE logs below.
 func (c *Collector) maybeLogUpdates(pu *proclient.PackageUpdates) {
 	if !c.opts.LogPackageUpdates {
 		return
@@ -533,14 +556,14 @@ func (c *Collector) maybeLogUpdates(pu *proclient.PackageUpdates) {
 	for _, u := range pu.Updates {
 		lines = append(lines, fmt.Sprintf("%s %s %s %s", u.Package, u.Version, u.ProvidedBy, u.Status))
 	}
-	ts := c.now().Unix()
-	if !c.maybeLog(&c.loggedUpdates, "pending", ts, lines) {
+	snap, emit, changed := c.maybeLog(&c.loggedUpdates, "pending", c.now().Unix(), lines)
+	if !emit {
 		return
 	}
 
-	c.logger.Info("pending package updates changed", "snapshot", ts, "num_updates", len(pu.Updates))
+	c.logger.Info("pending package updates changed", "snapshot", snap, "num_updates", len(pu.Updates), "changed", changed)
 	for _, u := range pu.Updates {
-		c.logger.Info("pending package update", "snapshot", ts,
+		c.logger.Info("pending package update", "snapshot", snap,
 			"package", u.Package,
 			"version", u.Version,
 			"pocket", u.ProvidedBy,
@@ -555,14 +578,14 @@ func (c *Collector) maybeLogInstalled(manifest []proclient.InstalledPackage) {
 	for _, p := range manifest {
 		lines = append(lines, p.Package+" "+p.Version)
 	}
-	ts := c.now().Unix()
-	if !c.maybeLog(&c.loggedInstalled, "installed", ts, lines) {
+	snap, emit, changed := c.maybeLog(&c.loggedInstalled, "installed", c.now().Unix(), lines)
+	if !emit {
 		return
 	}
 
-	c.logger.Info("installed packages changed", "snapshot", ts, "num_installed", len(manifest))
+	c.logger.Info("installed packages changed", "snapshot", snap, "num_installed", len(manifest), "changed", changed)
 	for _, p := range manifest {
-		c.logger.Info("installed package", "snapshot", ts,
+		c.logger.Info("installed package", "snapshot", snap,
 			"package", p.Package,
 			"version", p.Version)
 	}
@@ -628,14 +651,14 @@ func (c *Collector) maybeLogCVEs(data *proclient.CVEData) {
 	for _, p := range pairs {
 		lines = append(lines, p.Package+" "+p.CVE+" "+p.FixStatus+" "+p.FixVersion)
 	}
-	ts := c.now().Unix()
-	if !c.maybeLog(&c.loggedCVEs, "cves", ts, lines) {
+	snap, emit, changed := c.maybeLog(&c.loggedCVEs, "cves", c.now().Unix(), lines)
+	if !emit {
 		return
 	}
 
-	c.logger.Info("CVEs changed", "snapshot", ts, "num_pairs", len(pairs))
+	c.logger.Info("CVEs changed", "snapshot", snap, "num_pairs", len(pairs), "changed", changed)
 	for _, p := range pairs {
-		args := []any{"snapshot", ts,
+		args := []any{"snapshot", snap,
 			"package", p.Package,
 			"current_version", p.CurrentVersion,
 			"cve", p.CVE,
