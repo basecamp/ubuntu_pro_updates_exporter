@@ -496,6 +496,31 @@ func TestSnapshotIntervalDurationResolution(t *testing.T) {
 	}
 }
 
+func TestSnapshotIDsAdvanceWithinOneSecond(t *testing.T) {
+	// Two changed refreshes inside the same unix second must get distinct,
+	// advancing snapshot ids, or a join on snapshot would mix both versions.
+	var buf bytes.Buffer
+	fake := healthyFake()
+	fake.manifest = []proclient.InstalledPackage{{Package: "a", Version: "1"}}
+	c := captureCollector(fake, Options{LogInstalledPackages: true}, &buf)
+	c.Refresh(context.Background())
+
+	buf.Reset()
+	fake.manifest = []proclient.InstalledPackage{{Package: "a", Version: "2"}}
+	c.Refresh(context.Background())
+	items := logRecords(t, &buf, "installed package")
+	if len(items) != 1 || items[0]["snapshot"] != float64(1700000001) {
+		t.Fatalf("second change in the same second = %+v, want snapshot 1700000001", items)
+	}
+	if err := testutil.CollectAndCompare(c, strings.NewReader(`
+# HELP ubuntu_pro_updates_list_snapshot_timestamp_seconds Unix time of the newest logged snapshot per list; every log line of that snapshot carries the same value in its snapshot field, anchoring dashboards to exactly the latest list. Absent until a list first logs.
+# TYPE ubuntu_pro_updates_list_snapshot_timestamp_seconds gauge
+ubuntu_pro_updates_list_snapshot_timestamp_seconds{list="installed"} 1.700000001e+09
+`), "ubuntu_pro_updates_list_snapshot_timestamp_seconds"); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestCVELogPriorityFilter(t *testing.T) {
 	var buf bytes.Buffer
 	fake := healthyFake()
