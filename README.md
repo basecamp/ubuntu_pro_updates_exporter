@@ -4,6 +4,13 @@ A Prometheus exporter for Ubuntu package update status, based on the machine
 readable API of the Ubuntu Pro client
 ([`pro api u.pro.packages.updates.v1`](https://documentation.ubuntu.com/pro-client/en/latest/references/api/)).
 
+[![The host dashboard: update and CVE stats, trends, and the per-package
+tables fed by the exporter's logs](docs/images/host-dashboard.png)](docs/images/host-dashboard.png)
+
+*The [example host dashboard](examples/), here running against the
+[demo stack](examples/demo/) — three containers of deliberately outdated
+Ubuntu, real data throughout.*
+
 Most apt-based exporters count upgradable packages by parsing apt output or
 guessing from repository names. This exporter asks the Ubuntu Pro client
 instead. The client classifies every pending update into a pocket
@@ -92,12 +99,6 @@ how unchanged lists are periodically re-logged so log retention never
 orphans a snapshot — are documented in [docs/logs.md](docs/logs.md).
 
 ## Dashboards and alerts
-
-[![The host dashboard: update and CVE stats, trends, and the per-package
-tables fed by the exporter's logs](docs/images/host-dashboard.png)](docs/images/host-dashboard.png)
-
-*The host view above runs against the [demo stack](examples/demo/) —
-three containers of deliberately outdated Ubuntu, real data throughout.*
 
 The [examples](examples/) directory carries two importable Grafana
 dashboards — a fleet overview and a single-host drill-down, linked from
