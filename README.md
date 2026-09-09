@@ -93,6 +93,12 @@ orphans a snapshot — are documented in [docs/logs.md](docs/logs.md).
 
 ## Dashboards and alerts
 
+[![The host dashboard: update and CVE stats, trends, and the per-package
+tables fed by the exporter's logs](docs/images/host-dashboard.png)](docs/images/host-dashboard.png)
+
+*The host view above runs against the [demo stack](examples/demo/) —
+three containers of deliberately outdated Ubuntu, real data throughout.*
+
 The [examples](examples/) directory carries two importable Grafana
 dashboards — a fleet overview and a single-host drill-down, linked from
 the fleet's host table — and starter Prometheus alerting rules covering
