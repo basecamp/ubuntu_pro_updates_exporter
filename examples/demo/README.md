@@ -36,6 +36,10 @@ empty here — on real hosts they light up.
 Trend panels only show as much history as the stack has been running —
 leave it up for a while if you want the time-series panels to breathe.
 
+The log shipper is Promtail, which Grafana has retired in favor of
+Alloy; it still works fine for a throwaway local demo, but don't copy
+this part of the stack into anything long-lived.
+
 ## Tear down
 
 ```sh

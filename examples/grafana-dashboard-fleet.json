@@ -239,7 +239,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "count(ubuntu_pro_updates_reboot_required{state=\"yes\",instance=~\"$instance\"} == 1) or vector(0)",
+          "expr": "count(ubuntu_pro_updates_reboot_required{state=~\"yes|yes-kernel-livepatches-applied\",instance=~\"$instance\"} == 1) or vector(0)",
           "refId": "A",
           "instant": true
         }
@@ -720,7 +720,7 @@
       "id": 13,
       "type": "table",
       "title": "Top CVEs Across the Fleet (CVSS >= $cvss_min, kernel excluded)",
-      "description": "CVEs from the exporter's CVE log ranked by CVSS score, with the number of hosts each one affects. Counted over the dashboard time range from the JSON log entries; kernel packages have their own table.",
+      "description": "CVEs from the exporter's CVE log top by number of affected hosts, sorted by CVSS score, with the number of hosts each one affects. Counted over the dashboard time range from the JSON log entries; kernel packages have their own table. Capped at the query line limit, so exceptionally large result sets truncate.",
       "datasource": {
         "type": "loki",
         "uid": "${DS_LOKI}"
@@ -731,7 +731,7 @@
             "type": "loki",
             "uid": "${DS_LOKI}"
           },
-          "expr": "topk(30, count by (cve, cvss_score, cvss_severity, priority, fix_status) (sum by (cve, cvss_score, cvss_severity, priority, fix_status, instance) (count_over_time({job=\"$log_job\", instance=~\"${instance:regex}\"} | json | msg = `cve` | cvss_score >= $cvss_min | package !~ `linux-.*` [$__range]))))",
+          "expr": "topk(30, count by (cve, cvss_score, cvss_severity, priority, fix_status) (sum by (cve, cvss_score, cvss_severity, priority, fix_status, instance) (count_over_time({job=\"$log_job\", instance=~\"${instance:regex}\"} | json | msg = `cve` | cvss_score >= $cvss_min | __error__ = `` | package !~ `linux-.*` [$__range]))))",
           "refId": "A",
           "queryType": "instant",
           "maxLines": 1000
@@ -860,7 +860,7 @@
       "id": 14,
       "type": "table",
       "title": "Top Kernel CVEs Across the Fleet (CVSS >= $cvss_min)",
-      "description": "Kernel-package CVEs ranked by CVSS score with the number of hosts affected. Kept separate because kernel CVEs resolve through kernel upgrades and reboots, not package-by-package patching.",
+      "description": "Kernel-package CVEs top by number of affected hosts, sorted by CVSS score with the number of hosts affected. Kept separate because kernel CVEs resolve through kernel upgrades and reboots, not package-by-package patching. Capped at the query line limit, so exceptionally large result sets truncate.",
       "datasource": {
         "type": "loki",
         "uid": "${DS_LOKI}"
@@ -871,7 +871,7 @@
             "type": "loki",
             "uid": "${DS_LOKI}"
           },
-          "expr": "topk(30, count by (cve, cvss_score, cvss_severity, priority, fix_status) (sum by (cve, cvss_score, cvss_severity, priority, fix_status, instance) (count_over_time({job=\"$log_job\", instance=~\"${instance:regex}\"} | json | msg = `cve` | cvss_score >= $cvss_min | package =~ `linux-.*` [$__range]))))",
+          "expr": "topk(30, count by (cve, cvss_score, cvss_severity, priority, fix_status) (sum by (cve, cvss_score, cvss_severity, priority, fix_status, instance) (count_over_time({job=\"$log_job\", instance=~\"${instance:regex}\"} | json | msg = `cve` | cvss_score >= $cvss_min | __error__ = `` | package =~ `linux-.*` [$__range]))))",
           "refId": "A",
           "queryType": "instant",
           "maxLines": 1000
@@ -1000,7 +1000,7 @@
       "id": 15,
       "type": "table",
       "title": "Packages Behind the Top CVEs (CVSS >= $cvss_min, kernel excluded)",
-      "description": "The package-level view of the top CVEs: which package carries the exposure, whether a fix exists and in which version, and how many hosts run it.",
+      "description": "The package-level view of the top CVEs: which package carries the exposure, whether a fix exists and in which version, and how many hosts run it. Capped at the query line limit, so exceptionally large result sets truncate.",
       "datasource": {
         "type": "loki",
         "uid": "${DS_LOKI}"
@@ -1011,7 +1011,7 @@
             "type": "loki",
             "uid": "${DS_LOKI}"
           },
-          "expr": "topk(50, count by (cve, cvss_score, package, fix_status, fix_version) (sum by (cve, cvss_score, package, fix_status, fix_version, instance) (count_over_time({job=\"$log_job\", instance=~\"${instance:regex}\"} | json | msg = `cve` | cvss_score >= $cvss_min | package !~ `linux-.*` [$__range]))))",
+          "expr": "topk(50, count by (cve, cvss_score, package, fix_status, fix_version) (sum by (cve, cvss_score, package, fix_status, fix_version, instance) (count_over_time({job=\"$log_job\", instance=~\"${instance:regex}\"} | json | msg = `cve` | cvss_score >= $cvss_min | __error__ = `` | package !~ `linux-.*` [$__range]))))",
           "refId": "A",
           "queryType": "instant",
           "maxLines": 1000
@@ -1181,7 +1181,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "max by (instance) (ubuntu_pro_updates_reboot_required{state=\"yes\",instance=~\"$instance\"})",
+          "expr": "max by (instance) (ubuntu_pro_updates_reboot_required{state=~\"yes|yes-kernel-livepatches-applied\",instance=~\"$instance\"})",
           "refId": "D",
           "instant": true,
           "format": "table"

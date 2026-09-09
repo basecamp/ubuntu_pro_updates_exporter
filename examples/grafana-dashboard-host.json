@@ -65,7 +65,7 @@
   "version": 1,
   "editable": true,
   "time": {
-    "from": "now-24h",
+    "from": "now-2d",
     "to": "now"
   },
   "templating": {
@@ -455,7 +455,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "max(ubuntu_pro_updates_reboot_required{state=\"yes\", instance=\"$host\"})",
+          "expr": "max(ubuntu_pro_updates_reboot_required{state=~\"yes|yes-kernel-livepatches-applied\", instance=\"$host\"})",
           "refId": "A",
           "instant": true
         }
@@ -666,7 +666,7 @@
       "id": 9,
       "type": "table",
       "title": "CVE Pairs by CVSS Score (kernel excluded)",
-      "description": "Package-CVE pairs from the CVE log (-log.cves), ranked by CVSS score. Anchored to the newest snapshot via ubuntu_pro_updates_list_snapshot_timestamp_seconds, so the table shows exactly one version of the list; widen the time range if it comes up empty.",
+      "description": "Package-CVE pairs from the CVE log (-log.cves), ranked by CVSS score. Anchored to the newest snapshot via ubuntu_pro_updates_list_snapshot_timestamp_seconds, so the table shows exactly one version of the list; widen the time range if it comes up empty. Capped at the query line limit, so exceptionally large result sets truncate.",
       "datasource": {
         "type": "loki",
         "uid": "${DS_LOKI}"
@@ -809,7 +809,7 @@
       "id": 10,
       "type": "table",
       "title": "Kernel CVE Pairs by CVSS Score",
-      "description": "CVEs on kernel packages, kept separate because they resolve through kernel upgrades and reboots. Anchored to the newest snapshot via ubuntu_pro_updates_list_snapshot_timestamp_seconds, so the table shows exactly one version of the list; widen the time range if it comes up empty.",
+      "description": "CVEs on kernel packages, kept separate because they resolve through kernel upgrades and reboots. Anchored to the newest snapshot via ubuntu_pro_updates_list_snapshot_timestamp_seconds, so the table shows exactly one version of the list; widen the time range if it comes up empty. Capped at the query line limit, so exceptionally large result sets truncate.",
       "datasource": {
         "type": "loki",
         "uid": "${DS_LOKI}"
@@ -952,7 +952,7 @@
       "id": 11,
       "type": "table",
       "title": "Pending Updates",
-      "description": "The full pending-update list from the package-update log (-log.package-updates). Anchored to the newest snapshot via ubuntu_pro_updates_list_snapshot_timestamp_seconds, so the table shows exactly one version of the list; widen the time range if it comes up empty.",
+      "description": "The full pending-update list from the package-update log (-log.package-updates). Anchored to the newest snapshot via ubuntu_pro_updates_list_snapshot_timestamp_seconds, so the table shows exactly one version of the list; widen the time range if it comes up empty. Capped at the query line limit, so exceptionally large result sets truncate.",
       "datasource": {
         "type": "loki",
         "uid": "${DS_LOKI}"
@@ -1037,7 +1037,7 @@
       "id": 12,
       "type": "table",
       "title": "Installed Packages",
-      "description": "The installed-package manifest from the manifest log (-log.installed-packages). Anchored to the newest snapshot via ubuntu_pro_updates_list_snapshot_timestamp_seconds, so the table shows exactly one version of the list; widen the time range if it comes up empty.",
+      "description": "The installed-package manifest from the manifest log (-log.installed-packages). Anchored to the newest snapshot via ubuntu_pro_updates_list_snapshot_timestamp_seconds, so the table shows exactly one version of the list; widen the time range if it comes up empty. Capped at the query line limit, so exceptionally large result sets truncate.",
       "datasource": {
         "type": "loki",
         "uid": "${DS_LOKI}"

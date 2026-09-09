@@ -7,15 +7,17 @@ works with a plain static scrape config out of the box.
 ## Grafana dashboards
 
 Two standard importable dashboards: in Grafana go to Dashboards, Import,
-upload the file and pick your Prometheus data source.
+upload the file and pick your data sources — the import dialog asks for
+both a Prometheus and a Loki one, since the list tables are fed by the
+exporter's logs.
 
 - `grafana-dashboard-fleet.json` — the whole fleet at a glance: stat
   row, per-host status table, and trends for pending updates, CVE
   exposure and installed-package origins across every scraped host.
 - `grafana-dashboard-host.json` — one host in depth, picked with a host
   selector filled from the exporter's own metrics: its update backlog,
-  CVE breakdown by priority and fix status, reboot state, and package
-  origins.
+  CVE breakdown by priority and fix status, reboot state, and the
+  installed-package manifest.
 
 The fleet table links through: click a host to jump to its host
 dashboard.

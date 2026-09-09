@@ -40,10 +40,10 @@ groups:
           description: "Security fixes exist in the esm-infra pocket that this unattached host cannot install. Normally zero while the OS release is in standard support; a non-zero value means the release aged into ESM-only fixes, or Ubuntu Pro attachment should be considered."
 
       - alert: UbuntuProRebootRequired
-        expr: ubuntu_pro_updates_reboot_required{state="yes"} == 1
+        expr: ubuntu_pro_updates_reboot_required{state=~"yes|yes-kernel-livepatches-applied"} == 1
         for: 7d
         labels:
           severity: warning
         annotations:
           summary: "{{ $labels.instance }} has needed a reboot for a week"
-          description: "The host has required a reboot (typically for a kernel or core library update) for 7 days. Schedule the reboot."
+          description: "The host has required a reboot (typically for a kernel or core library update) for 7 days. Schedule the reboot. When the state is yes-kernel-livepatches-applied, Livepatch covers the running kernel and the urgency is lower — but the reboot is still pending."
