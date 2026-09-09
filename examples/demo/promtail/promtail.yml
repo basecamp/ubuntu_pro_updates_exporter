@@ -1,8 +1,11 @@
 server:
   http_listen_port: 9080
 
+# On a named volume: positions in the container filesystem die with a
+# recreate, and promtail then re-ships every container log from the
+# start, duplicating rows in Loki.
 positions:
-  filename: /tmp/positions.yaml
+  filename: /positions/positions.yaml
 
 clients:
   - url: http://loki:3100/loki/api/v1/push
