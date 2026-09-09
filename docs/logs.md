@@ -62,8 +62,10 @@ time, so the effective maximum snapshot age is the snapshot interval plus
 `--pro.refresh-interval` — with the defaults, 24h + 12h — and refresh
 failures extend it further, since only a refresh that produced data can
 re-log it. Size the dashboard lookback for that sum plus slack, not for
-the snapshot interval alone. An interval at or below the refresh interval
-simply re-logs on every refresh. The join on `snapshot` still finds
+the snapshot interval alone. An interval comfortably below the refresh
+interval re-logs on every refresh; at exact equality the query-duration
+jitter can skip alternate refreshes, since the snapshot timestamp is
+taken after the queries finish while refreshes tick from their start. The join on `snapshot` still finds
 exactly one copy, and the summary entry carries `changed=false` for these
 re-logs. The cost is one full list per host per interval; `0` restores
 change-only logging.
