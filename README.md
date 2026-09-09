@@ -37,6 +37,16 @@ disables CVE collection for the life of the process: upgrade the client
 and restart the exporter to enable it. `ubuntu_pro_updates_client_info`
 makes that rollout observable.
 
+**Budget up to ~1.2 GB of transient memory for each CVE refresh**:
+current pro clients materialize the full vulnerability feed to answer
+the query — we measured 0.9 GB peak RSS on noble and 1.2 GB on jammy
+(upstream issue:
+[canonical/ubuntu-pro-client#3613](https://github.com/canonical/ubuntu-pro-client/issues/3613)). On hosts where a resident
+workload already claims most of the RAM, that spike can invoke the
+kernel OOM killer — and the kernel often picks the workload, not the pro
+process. Run with `--pro.cves=false` on such hosts until the upstream
+cost comes down; every other metric works without it.
+
 ## Metrics
 
 | Metric | Type | Labels | Meaning |
@@ -55,46 +65,10 @@ makes that rollout observable.
 | `ubuntu_pro_updates_exporter_query_duration_seconds` | gauge | | Time spent querying the pro client during the last refresh |
 | `ubuntu_pro_updates_exporter_build_info` | gauge | `version`, `revision`, `goversion` | Build information |
 
-Label values are fixed and low cardinality. All series are always exported,
-at 0 when empty, so alerts never have to deal with absent series.
-
-- `pocket`: `standard-security`, `standard-updates`, `esm-apps`, `esm-infra`
-- `status`: `upgrade_available`, `upgrade_available_not_preferred`,
-  `pending_attach` (the fix exists in ESM but the host is unattached),
-  `pending_enable` (attached, but the ESM service is disabled) and
-  `upgrade_unavailable` (attached, but not entitled)
-- `state`: `no`, `yes` and `yes-kernel-livepatches-applied` (a reboot is
-  pending but Livepatch covers the running kernel)
-- `origin` on `installed_packages`: `main`, `universe`, `multiverse`,
-  `restricted`, `esm-apps`, `esm-infra`, `third-party`, `unknown`
-- `priority`: the Ubuntu CVE priorities `negligible`, `low`, `medium`,
-  `high`, `critical`
-- `fix_status`: `fixed` (a fix exists that the host has not applied),
-  `vulnerable` (no fix released) and `unknown` (fix availability not
-  determined for the package); a CVE affecting several packages counts
-  once, under its most actionable status
-- `origin` on `cve_fixes`: `security`, `updates`, `esm-apps`, `esm-infra`
-  (the esm pockets need an Ubuntu Pro subscription)
-
-There is deliberately no total gauge. The sum of `ubuntu_pro_updates_pending`
-equals the `num_updates` field of the API, and a gauge named `*_total` would
-collide with counter naming conventions.
-
-### Example queries
-
-```promql
-# Pending security updates (standard pocket) per host
-sum by (instance) (ubuntu_pro_updates_pending{pocket="standard-security"})
-
-# Security fixes a host is missing because it is not attached to Ubuntu Pro
-sum by (instance) (ubuntu_pro_updates_pending{status="pending_attach"})
-
-# Hosts needing a reboot, excluding those covered by Livepatch
-ubuntu_pro_updates_reboot_required{state="yes"} == 1
-
-# Exporter healthy but data stale for a day
-time() - ubuntu_pro_updates_exporter_last_success_timestamp_seconds > 86400
-```
+Label values are fixed and low cardinality, and every series is always
+exported (at 0 when empty) so alerts never deal with absent series. The
+label values and starter queries are documented in
+[docs/metrics.md](docs/metrics.md).
 
 ## Which packages?
 
@@ -112,61 +86,20 @@ and how many, the log tells you which. The same pattern powers
 `--log.installed-packages` (the inventory manifest) and `--log.cves` (the
 package-CVE pairs affecting installed packages).
 
-Every log follows the same flag shape: a boolean `--log.*` flag enables
-it, and where a log supports filtering, the filter is a comma-separated
-list of the values to include, with a sane default. The CVE log has two
-such filters. `--log.cves-statuses` picks the fix statuses: `fixed` means
-a fix exists that the host has not applied (the action is upgrading, and
-the entry names the version and pocket), `vulnerable` means the exposure
-is confirmed with no fix released, and `unknown` means Canonical has not
-determined fix availability for that package (the action for those two is
-mitigating; a dashboard splits them from the fixed entries on the
-`fix_status` field). The unknown bucket is typically the largest and
-partly reflects gaps in the vulnerability data (for example `-dbg` and
-`-dev` packages that are not tracked individually), so dropping it from
-the default `fixed,vulnerable,unknown` is the low-noise choice.
-`--log.cves-priorities` bounds the volume by Ubuntu CVE priority and
-defaults to `high,critical`; the full list of fixable packages regardless
-of priority is already what `--log.package-updates` provides. CVEs
-without a triaged priority never reach the log; they stay visible in the
-aggregate metrics. Each entry also carries the installed version the
-pair was evaluated against (`current_version`) and, when Ubuntu's data
-has a CVSS assessment, the CVE's `cvss_score` and `cvss_severity`
-(omitted otherwise), so log queries can rank by score rather than by
-the coarser priority buckets.
-
-Per-item entries keep every line small (journald truncates lines around
-48KiB) and make the log store queryable line by line: filter by package,
-CVE or priority, or turn the entries of one host into a table. Every entry
-of a snapshot carries the same `snapshot` field, and the newest snapshot
-time per list is exported as
-`ubuntu_pro_updates_list_snapshot_timestamp_seconds{list=...}` - so a
-dashboard resolves that gauge for a host and filters the log entries with
-`snapshot` equal to it to show exactly the current list, including
-removals.
-
-Logging only on change would let a log store's retention eventually delete
-the only copy of a list that has not changed in a while, leaving the gauge
-pointing at a snapshot no store holds. So the exporter also re-logs an
-unchanged list as a fresh snapshot once its last snapshot is
-`--log.snapshot-interval` old (default 24h). The check runs at refresh
-time, so the effective maximum snapshot age is the snapshot interval plus
-`--pro.refresh-interval` -- with the defaults, 24h + 12h -- and refresh
-failures extend it further, since only a refresh that produced data can
-re-log it. Size the dashboard lookback for that sum plus slack, not for
-the snapshot interval alone. An interval at or below the refresh interval
-simply re-logs on every refresh. The join on `snapshot` still finds
-exactly one copy, and the summary entry carries `changed=false` for these
-re-logs. The cost is one full list per host per interval; `0` restores
-change-only logging.
+The log entry shape, the CVE log filters, and the snapshot pattern that
+lets a dashboard show exactly the current list of one host — including
+how unchanged lists are periodically re-logged so log retention never
+orphans a snapshot — are documented in [docs/logs.md](docs/logs.md).
 
 ## Dashboards and alerts
 
-The [examples](examples/) directory carries an importable Grafana
-dashboard (fleet stat row, update and CVE trends, a per-host table,
-host selector included) and starter Prometheus alerting rules covering
-a broken exporter, stale data, security-update backlog, ESM-locked
-fixes and pending reboots. Both use only the standard `instance` label.
+The [examples](examples/) directory carries two importable Grafana
+dashboards — a fleet overview and a single-host drill-down, linked from
+the fleet's host table — and starter Prometheus alerting rules covering
+a broken exporter, stale data, security-update backlog, ESM-locked fixes
+and pending reboots. Everything uses only the standard `instance` label,
+and [examples/demo](examples/demo/) runs a three-container fleet with
+real data to try it all on.
 
 ## Installing
 
@@ -174,21 +107,6 @@ Download the static binary for your architecture (linux amd64 or arm64) from
 the [releases page](https://github.com/basecamp/ubuntu_pro_updates_exporter/releases)
 and put it on the host. That is the whole install. The project deliberately
 ships just the binary; run it under your process supervisor of choice.
-
-## Building
-
-The toolchain is managed with [mise](https://mise.jdx.dev), see `.mise.toml`:
-
-```sh
-mise install    # Go and goreleaser
-make            # gofmt check, go vet, tests, build
-make snapshot   # goreleaser build --snapshot --clean
-```
-
-Releases are built with [goreleaser](https://goreleaser.com), see
-`.goreleaser.yaml`. CI runs fmt, vet, build and tests on every push and pull
-request. Pushing a `v*` tag drafts a GitHub release with the binaries
-attached.
 
 ## Running
 
@@ -233,33 +151,25 @@ client writes a per-user log under `$HOME/.cache` when invoked unprivileged.
 Port 10052 is the port registered for this exporter in the
 [Prometheus default port allocations](https://github.com/prometheus/prometheus/wiki/Default-port-allocations).
 
-## Design notes
+## Building
 
-Why shell out to `pro api`? It is the only stable machine readable interface
-of the pro client. The underlying API is an in-process Python library, and
-there is no socket or D-Bus service. The CLI prints a versioned JSON envelope
-to stdout even on failure, so the exporter parses JSON exclusively, never
-exit codes or English text, and surfaces the error codes of the envelope
-itself.
+The toolchain is managed with [mise](https://mise.jdx.dev), see `.mise.toml`:
 
-Collection is decoupled from serving. A single `pro api` walk of the apt
-cache costs seconds of CPU, and on pro client 37 the updates query costs
-roughly another 0.6s of CPU per pending update (the client re-opens the
-apt cache for each update it classifies), so a host far behind on patches
-can spend minutes per refresh. That would make every scrape slow and let
-concurrent scrapes pile up pro processes; it is also why `--pro.timeout`
-defaults to a generous 10 minutes. The refresh happens in the background,
-so the cost is CPU only, never scrape latency. The background loop refreshes the
-data instead, and scrapes serve the cached snapshot. The default interval of
-12 hours mirrors the cadence of apt-daily, whose timer runs twice a day and
-refreshes package lists at most once per day. When a refresh fails, the
-detail metrics are dropped rather than served stale, and `ubuntu_pro_updates_exporter_up`
-together with `ubuntu_pro_updates_exporter_last_success_timestamp_seconds` keeps failure and
-staleness alertable.
+```sh
+mise install    # Go and goreleaser
+make            # gofmt check, go vet, tests, build
+make snapshot   # goreleaser build --snapshot --clean
+```
 
-The reboot required query is best effort. If it fails while the updates
-query succeeds, `ubuntu_pro_updates_exporter_up` stays 1 and only the reboot metric is
-omitted.
+Releases are built with [goreleaser](https://goreleaser.com), see
+`.goreleaser.yaml`. CI runs fmt, vet, build and tests on every push and pull
+request. Pushing a `v*` tag drafts a GitHub release with the binaries
+attached.
+
+## Design
+
+Why shell out to the pro CLI, why collection is decoupled from serving,
+and how failure is kept alertable: [docs/design.md](docs/design.md).
 
 ## License
 
