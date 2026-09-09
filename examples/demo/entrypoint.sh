@@ -15,5 +15,6 @@ exec /usr/local/bin/ubuntu-pro-updates-exporter \
     -log.cves \
     -log.package-updates \
     -log.installed-packages \
-    -pro.refresh-interval="${DEMO_REFRESH_INTERVAL:-30m}" \
+    -pro.refresh-interval="${DEMO_REFRESH_INTERVAL:-10m}" \
+    -log.snapshot-interval="${DEMO_SNAPSHOT_INTERVAL:-10m}" \
     "$@"
