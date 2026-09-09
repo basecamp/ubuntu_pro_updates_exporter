@@ -1349,5 +1349,6 @@
       "title": "Ubuntu Pro dashboards",
       "type": "dashboards"
     }
-  ]
+  ],
+  "refresh": "1m"
 }

@@ -1147,5 +1147,6 @@
         "enableLogDetails": true
       }
     }
-  ]
+  ],
+  "refresh": "1m"
 }
