@@ -1,16 +1,31 @@
 # Examples
 
 Starting points for wiring the exporter into a Prometheus and Grafana
-setup. Both files use only the standard `instance` label, so they work
-with a plain static scrape config out of the box.
+setup. Everything here uses only the standard `instance` label, so it
+works with a plain static scrape config out of the box.
 
-## Grafana dashboard
+## Grafana dashboards
 
-`grafana-dashboard.json` is a standard importable dashboard: in Grafana
-go to Dashboards, Import, upload the file and pick your Prometheus data
-source. It has a host selector (multi-select, filled from the exporter's
-own metrics), a fleet stat row, trends for pending updates, CVE exposure
-and installed-package origins, and a per-host status table.
+Two standard importable dashboards: in Grafana go to Dashboards, Import,
+upload the file and pick your Prometheus data source.
+
+- `grafana-dashboard-fleet.json` — the whole fleet at a glance: stat
+  row, per-host status table, and trends for pending updates, CVE
+  exposure and installed-package origins across every scraped host.
+- `grafana-dashboard-host.json` — one host in depth, picked with a host
+  selector filled from the exporter's own metrics: its update backlog,
+  CVE breakdown by priority and fix status, reboot state, and package
+  origins.
+
+The fleet table links through: click a host to jump to its host
+dashboard.
+
+## Demo stack
+
+Want to see the dashboards with real data before touching a real host?
+[`demo/`](demo/) runs a self-contained three-container fleet built from
+deliberately outdated Ubuntu images with the real `pro` client and this
+exporter — `docker compose up` and screenshots away.
 
 ## Prometheus alerts
 

@@ -7,6 +7,14 @@
       "type": "datasource",
       "pluginId": "prometheus",
       "pluginName": "Prometheus"
+    },
+    {
+      "name": "DS_LOKI",
+      "label": "Loki",
+      "description": "Log datasource receiving the exporter's JSON log entries",
+      "type": "datasource",
+      "pluginId": "loki",
+      "pluginName": "Loki"
     }
   ],
   "__requires": [
@@ -21,15 +29,22 @@
       "id": "prometheus",
       "name": "Prometheus",
       "version": "1.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "loki",
+      "name": "Loki",
+      "version": "1.0.0"
     }
   ],
-  "title": "Ubuntu Pro Updates Exporter",
-  "uid": "ubuntu-pro-updates-exporter",
-  "description": "Package-update and CVE exposure from ubuntu-pro-updates-exporter.",
+  "title": "Ubuntu Pro Updates Fleet",
+  "uid": "ubuntu-pro-updates-fleet",
+  "description": "Fleet view of package-update and CVE exposure from ubuntu-pro-updates-exporter. Zoom into one host with the Ubuntu Pro Updates Host dashboard.",
   "tags": [
     "ubuntu",
     "security",
-    "prometheus-exporter"
+    "prometheus-exporter",
+    "ubuntu-pro"
   ],
   "timezone": "browser",
   "schemaVersion": 39,
@@ -67,6 +82,46 @@
         },
         "options": [],
         "sort": 1
+      },
+      {
+        "name": "log_job",
+        "label": "Log job",
+        "description": "Loki job label carrying the exporter's log entries; depends on how your log pipeline labels the exporter's unit or container.",
+        "type": "textbox",
+        "query": "ubuntu-pro-updates-exporter",
+        "current": {
+          "text": "ubuntu-pro-updates-exporter",
+          "value": "ubuntu-pro-updates-exporter",
+          "selected": false
+        },
+        "options": [
+          {
+            "text": "ubuntu-pro-updates-exporter",
+            "value": "ubuntu-pro-updates-exporter",
+            "selected": false
+          }
+        ],
+        "hide": 0
+      },
+      {
+        "name": "cvss_min",
+        "label": "Min CVSS",
+        "description": "CVSS score cutoff for the fleet-wide CVE tables.",
+        "type": "textbox",
+        "query": "7",
+        "current": {
+          "text": "7",
+          "value": "7",
+          "selected": false
+        },
+        "options": [
+          {
+            "text": "7",
+            "value": "7",
+            "selected": false
+          }
+        ],
+        "hide": 0
       }
     ]
   },
@@ -664,6 +719,426 @@
     {
       "id": 13,
       "type": "table",
+      "title": "Top CVEs Across the Fleet (CVSS >= $cvss_min, kernel excluded)",
+      "description": "CVEs from the exporter's CVE log ranked by CVSS score, with the number of hosts each one affects. Counted over the dashboard time range from the JSON log entries; kernel packages have their own table.",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "topk(30, count by (cve, cvss_score, cvss_severity, priority, fix_status) (sum by (cve, cvss_score, cvss_severity, priority, fix_status, instance) (count_over_time({job=\"$log_job\", instance=~\"${instance:regex}\"} | json | msg = `cve` | cvss_score >= $cvss_min | package !~ `linux-.*` [$__range]))))",
+          "refId": "A",
+          "queryType": "instant",
+          "maxLines": 1000
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 19,
+        "w": 12,
+        "h": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cvss_score"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 4
+                    },
+                    {
+                      "color": "orange",
+                      "value": 7
+                    },
+                    {
+                      "color": "red",
+                      "value": 9
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {}
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "cvss_score",
+                "cvss_severity",
+                "cve",
+                "priority",
+                "fix_status",
+                "Value"
+              ]
+            }
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "cvss_score",
+                "destinationType": "number"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "cvss_score",
+                "desc": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {
+              "cvss_score": 0,
+              "cvss_severity": 1,
+              "cve": 2,
+              "priority": 3,
+              "fix_status": 4,
+              "Value": 5
+            },
+            "renameByName": {
+              "Value": "Hosts affected"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "table",
+      "title": "Top Kernel CVEs Across the Fleet (CVSS >= $cvss_min)",
+      "description": "Kernel-package CVEs ranked by CVSS score with the number of hosts affected. Kept separate because kernel CVEs resolve through kernel upgrades and reboots, not package-by-package patching.",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "topk(30, count by (cve, cvss_score, cvss_severity, priority, fix_status) (sum by (cve, cvss_score, cvss_severity, priority, fix_status, instance) (count_over_time({job=\"$log_job\", instance=~\"${instance:regex}\"} | json | msg = `cve` | cvss_score >= $cvss_min | package =~ `linux-.*` [$__range]))))",
+          "refId": "A",
+          "queryType": "instant",
+          "maxLines": 1000
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 19,
+        "w": 12,
+        "h": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cvss_score"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 4
+                    },
+                    {
+                      "color": "orange",
+                      "value": 7
+                    },
+                    {
+                      "color": "red",
+                      "value": 9
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {}
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "cvss_score",
+                "cvss_severity",
+                "cve",
+                "priority",
+                "fix_status",
+                "Value"
+              ]
+            }
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "cvss_score",
+                "destinationType": "number"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "cvss_score",
+                "desc": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {
+              "cvss_score": 0,
+              "cvss_severity": 1,
+              "cve": 2,
+              "priority": 3,
+              "fix_status": 4,
+              "Value": 5
+            },
+            "renameByName": {
+              "Value": "Hosts affected"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Packages Behind the Top CVEs (CVSS >= $cvss_min, kernel excluded)",
+      "description": "The package-level view of the top CVEs: which package carries the exposure, whether a fix exists and in which version, and how many hosts run it.",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "expr": "topk(50, count by (cve, cvss_score, package, fix_status, fix_version) (sum by (cve, cvss_score, package, fix_status, fix_version, instance) (count_over_time({job=\"$log_job\", instance=~\"${instance:regex}\"} | json | msg = `cve` | cvss_score >= $cvss_min | package !~ `linux-.*` [$__range]))))",
+          "refId": "A",
+          "queryType": "instant",
+          "maxLines": 1000
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 24,
+        "h": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cvss_score"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 4
+                    },
+                    {
+                      "color": "orange",
+                      "value": 7
+                    },
+                    {
+                      "color": "red",
+                      "value": 9
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {}
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "cvss_score",
+                "package",
+                "cve",
+                "fix_status",
+                "fix_version",
+                "Value"
+              ]
+            }
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "cvss_score",
+                "destinationType": "number"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "cvss_score",
+                "desc": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {},
+            "indexByName": {
+              "cvss_score": 0,
+              "package": 1,
+              "cve": 2,
+              "fix_status": 3,
+              "fix_version": 4,
+              "Value": 5
+            },
+            "renameByName": {
+              "Value": "Hosts affected"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "table",
       "title": "Per-host Status",
       "description": "One row per host. Data age is the time since the exporter last refreshed successfully.",
       "datasource": {
@@ -724,13 +1199,110 @@
       ],
       "gridPos": {
         "x": 0,
-        "y": 19,
+        "y": 39,
         "w": 24,
         "h": 10
       },
       "fieldConfig": {
-        "defaults": {},
-        "overrides": []
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Host"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open host view",
+                    "url": "/d/ubuntu-pro-updates-host/ubuntu-pro-updates-host?var-host=${__value.text}&${__url_time_range}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Reboot"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "OK"
+                      },
+                      "1": {
+                        "color": "orange",
+                        "index": 1,
+                        "text": "REBOOT"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Data Age"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 93600
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          }
+        ]
       },
       "transformations": [
         {
@@ -752,15 +1324,30 @@
               "Value #E": 5
             },
             "renameByName": {
-              "Value #A": "Security pending",
-              "Value #B": "Total pending",
-              "Value #C": "ESM locked",
-              "Value #D": "Reboot required",
-              "Value #E": "Data age (s)"
+              "instance": "Host",
+              "Value #A": "Security Pending",
+              "Value #B": "Total Pending",
+              "Value #C": "ESM Locked (pending_attach)",
+              "Value #D": "Reboot",
+              "Value #E": "Data Age"
             }
           }
         }
       ]
+    }
+  ],
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [
+        "ubuntu-pro"
+      ],
+      "targetBlank": false,
+      "title": "Ubuntu Pro dashboards",
+      "type": "dashboards"
     }
   ]
 }
