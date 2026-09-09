@@ -28,6 +28,11 @@ RUN apt-get update -q && \
     apt-get install -y --no-install-recommends \
         ubuntu-advantage-tools ca-certificates ${EXTRA_PACKAGES}
 
+# The package-manifest endpoint shells out to `snap list`; containers have
+# no snapd, so stub it as "no snaps" or the installed-packages log (and its
+# dashboard table) stays empty in the demo.
+RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/snap && chmod +x /usr/local/bin/snap
+
 COPY --from=build /ubuntu-pro-updates-exporter /usr/local/bin/ubuntu-pro-updates-exporter
 COPY examples/demo/entrypoint.sh /usr/local/bin/demo-entrypoint
 
