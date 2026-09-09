@@ -1,0 +1,24 @@
+server:
+  http_listen_port: 9080
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: pro-hosts
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+        filters:
+          - name: label
+            values: ["demo.role=pro-host"]
+    relabel_configs:
+      # Label log streams by compose service name so they line up with
+      # the Prometheus instance label.
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        target_label: instance
+      - target_label: job
+        replacement: ubuntu-pro-updates-exporter
