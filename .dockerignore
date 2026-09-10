@@ -1,0 +1,7 @@
+# The demo Dockerfile builds with the repository root as context; keep
+# the context to what the build actually reads (Go sources and the demo
+# entrypoint).
+.git
+docs/
+dist/
+*.png

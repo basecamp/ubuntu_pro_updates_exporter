@@ -160,6 +160,14 @@ exactly one copy, and the summary entry carries `changed=false` for these
 re-logs. The cost is one full list per host per interval; `0` restores
 change-only logging.
 
+## Dashboards and alerts
+
+The [examples](examples/) directory carries an importable Grafana
+dashboard (fleet stat row, update and CVE trends, a per-host table,
+host selector included) and starter Prometheus alerting rules covering
+a broken exporter, stale data, security-update backlog, ESM-locked
+fixes and pending reboots. Both use only the standard `instance` label.
+
 ## Installing
 
 Download the static binary for your architecture (linux amd64 or arm64) from
