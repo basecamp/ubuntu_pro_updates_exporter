@@ -35,6 +35,9 @@ caches, so results are as fresh as the last `apt update`.
 
 If the pro client is missing or fails, the exporter keeps serving with
 `ubuntu_pro_updates_exporter_up` set to 0. It never crashes on a degraded host.
+When only one of the other queries fails, its metrics are omitted, the rest
+keep being served, and `ubuntu_pro_updates_exporter_query_success` shows
+which query failed.
 
 CVE metrics use `u.pro.security.cves.v1`, which exists since pro client 35
 and downloads Canonical's public vulnerability data, so it needs network
@@ -69,6 +72,7 @@ cost comes down; every other metric works without it.
 | `ubuntu_pro_updates_client_info` | gauge | `version` | Installed pro client version |
 | `ubuntu_pro_updates_list_snapshot_timestamp_seconds` | gauge | `list` | Unix time of the newest logged snapshot per on-change list |
 | `ubuntu_pro_updates_exporter_last_success_timestamp_seconds` | gauge | | Unix time of the last successful refresh, absent until one succeeds |
+| `ubuntu_pro_updates_exporter_query_success` | gauge | `query` | 1 if that pro client query succeeded in the last refresh, 0 if it failed and its metrics were omitted |
 | `ubuntu_pro_updates_exporter_query_duration_seconds` | gauge | | Time spent querying the pro client during the last refresh |
 | `ubuntu_pro_updates_exporter_build_info` | gauge | `version`, `revision`, `goversion` | Build information |
 

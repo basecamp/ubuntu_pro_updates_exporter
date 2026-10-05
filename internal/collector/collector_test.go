@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/basecamp/ubuntu_pro_updates_exporter/internal/proclient"
 )
@@ -175,8 +177,14 @@ var allFamilyNames = []string{
 	"ubuntu_pro_updates_client_info",
 	"ubuntu_pro_updates_list_snapshot_timestamp_seconds",
 	"ubuntu_pro_updates_exporter_last_success_timestamp_seconds",
+	"ubuntu_pro_updates_exporter_query_success",
 	"ubuntu_pro_updates_exporter_query_duration_seconds",
 }
+
+const querySuccessHeader = `
+# HELP ubuntu_pro_updates_exporter_query_success Whether each Ubuntu Pro client query succeeded in the last refresh; the metrics of a failed query are omitted. Absent for queries that were skipped.
+# TYPE ubuntu_pro_updates_exporter_query_success gauge
+`
 
 func TestCollectBeforeFirstRefresh(t *testing.T) {
 	c := newTestCollector(healthyFake())
@@ -271,6 +279,12 @@ ubuntu_pro_updates_client_info{version="37.2ubuntu~22.04.1"} 1
 # HELP ubuntu_pro_updates_exporter_last_success_timestamp_seconds Unix time of the last successful package-updates refresh; absent until one succeeds.
 # TYPE ubuntu_pro_updates_exporter_last_success_timestamp_seconds gauge
 ubuntu_pro_updates_exporter_last_success_timestamp_seconds 1.7e+09
+` + querySuccessHeader + `ubuntu_pro_updates_exporter_query_success{query="attached"} 1
+ubuntu_pro_updates_exporter_query_success{query="client_version"} 1
+ubuntu_pro_updates_exporter_query_success{query="cves"} 1
+ubuntu_pro_updates_exporter_query_success{query="installed_summary"} 1
+ubuntu_pro_updates_exporter_query_success{query="package_updates"} 1
+ubuntu_pro_updates_exporter_query_success{query="reboot_required"} 1
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected), allFamilyNames[:len(allFamilyNames)-1]...)
 	if err != nil {
@@ -282,8 +296,8 @@ func TestCollectProFailure(t *testing.T) {
 	c := newTestCollector(&fakeClient{})
 	c.Refresh(context.Background())
 
-	// Every query failed: up 0 and a duration; detail families and the
-	// never-succeeded timestamp must be absent.
+	// Every query failed: up 0, a duration and every query_success 0;
+	// detail families and the never-succeeded timestamp must be absent.
 	expected := `
 # HELP ubuntu_pro_updates_exporter_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
 # TYPE ubuntu_pro_updates_exporter_up gauge
@@ -291,11 +305,78 @@ ubuntu_pro_updates_exporter_up 0
 # HELP ubuntu_pro_updates_exporter_query_duration_seconds Time spent querying the Ubuntu Pro client during the last refresh.
 # TYPE ubuntu_pro_updates_exporter_query_duration_seconds gauge
 ubuntu_pro_updates_exporter_query_duration_seconds 0
+` + querySuccessHeader + `ubuntu_pro_updates_exporter_query_success{query="attached"} 0
+ubuntu_pro_updates_exporter_query_success{query="client_version"} 0
+ubuntu_pro_updates_exporter_query_success{query="cves"} 0
+ubuntu_pro_updates_exporter_query_success{query="installed_summary"} 0
+ubuntu_pro_updates_exporter_query_success{query="package_updates"} 0
+ubuntu_pro_updates_exporter_query_success{query="reboot_required"} 0
 `
 	err := testutil.CollectAndCompare(c, strings.NewReader(expected), allFamilyNames...)
 	if err != nil {
 		t.Error(err)
 	}
+}
+
+// The Livepatch case (issue #9): only the reboot-required query fails. The
+// exporter stays up, every other metric is served, and the gap is visible.
+func TestRebootQueryFailureIsVisible(t *testing.T) {
+	fake := healthyFake()
+	fake.reboot = nil
+	c := newTestCollector(fake)
+	c.Refresh(context.Background())
+
+	if got := testutil.CollectAndCount(c, "ubuntu_pro_updates_reboot_required"); got != 0 {
+		t.Errorf("reboot_required series after a failed query = %d, want 0", got)
+	}
+	if got := testutil.CollectAndCount(c, "ubuntu_pro_updates_pending", "ubuntu_pro_updates_installed_packages", "ubuntu_pro_updates_attached"); got == 0 {
+		t.Error("other detail metrics dropped along with reboot_required")
+	}
+	err := testutil.CollectAndCompare(c, strings.NewReader(`
+# HELP ubuntu_pro_updates_exporter_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
+# TYPE ubuntu_pro_updates_exporter_up gauge
+ubuntu_pro_updates_exporter_up 1
+`+querySuccessHeader+`ubuntu_pro_updates_exporter_query_success{query="attached"} 1
+ubuntu_pro_updates_exporter_query_success{query="client_version"} 1
+ubuntu_pro_updates_exporter_query_success{query="cves"} 1
+ubuntu_pro_updates_exporter_query_success{query="installed_summary"} 1
+ubuntu_pro_updates_exporter_query_success{query="package_updates"} 1
+ubuntu_pro_updates_exporter_query_success{query="reboot_required"} 0
+`), "ubuntu_pro_updates_exporter_up", "ubuntu_pro_updates_exporter_query_success")
+	if err != nil {
+		t.Error(err)
+	}
+
+	// The query recovers on the next refresh.
+	fake.reboot = &proclient.RebootRequired{RebootRequired: "yes"}
+	c.Refresh(context.Background())
+	if v := querySuccess(t, c, "reboot_required"); v != 1 {
+		t.Errorf("query_success{query=\"reboot_required\"} after recovery = %v, want 1", v)
+	}
+}
+
+// querySuccess returns the value of the query_success series for query, or
+// -1 when the series is absent.
+func querySuccess(t *testing.T, c *Collector, query string) float64 {
+	t.Helper()
+	ch := make(chan prometheus.Metric, 256)
+	c.Collect(ch)
+	close(ch)
+	for m := range ch {
+		if m.Desc() != c.querySuccess {
+			continue
+		}
+		var pb dto.Metric
+		if err := m.Write(&pb); err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range pb.GetLabel() {
+			if l.GetName() == "query" && l.GetValue() == query {
+				return pb.GetGauge().GetValue()
+			}
+		}
+	}
+	return -1
 }
 
 func TestCVEUnsupportedChecksOnce(t *testing.T) {
@@ -311,6 +392,10 @@ func TestCVEUnsupportedChecksOnce(t *testing.T) {
 	// collection stays disabled until the process restarts.
 	if fake.cveCalls != 1 {
 		t.Errorf("CVE endpoint probed %d times, want 1", fake.cveCalls)
+	}
+	// An unsupported endpoint is skipped, not failing.
+	if v := querySuccess(t, c, "cves"); v != -1 {
+		t.Errorf("query_success{query=\"cves\"} with unsupported client = %v, want absent", v)
 	}
 	if got := testutil.CollectAndCount(c, "ubuntu_pro_updates_cves", "ubuntu_pro_updates_cve_fixes"); got != 0 {
 		t.Errorf("cve series with unsupported client = %d, want 0", got)
@@ -336,6 +421,9 @@ func TestCVETransientFailureRetries(t *testing.T) {
 	if fake.cveCalls != 2 {
 		t.Errorf("CVE endpoint probed %d times, want 2", fake.cveCalls)
 	}
+	if v := querySuccess(t, c, "cves"); v != 0 {
+		t.Errorf("query_success{query=\"cves\"} after a transient failure = %v, want 0", v)
+	}
 }
 
 func TestCVEsDisabledByOption(t *testing.T) {
@@ -349,6 +437,25 @@ func TestCVEsDisabledByOption(t *testing.T) {
 	}
 	if got := testutil.CollectAndCount(c, "ubuntu_pro_updates_cves", "ubuntu_pro_updates_cve_fixes"); got != 0 {
 		t.Errorf("cve series with collection disabled = %d, want 0", got)
+	}
+	if v := querySuccess(t, c, "cves"); v != -1 {
+		t.Errorf("query_success{query=\"cves\"} with collection disabled = %v, want absent", v)
+	}
+	// The manifest is only queried for the installed-packages log.
+	if v := querySuccess(t, c, "package_manifest"); v != -1 {
+		t.Errorf("query_success{query=\"package_manifest\"} with the log disabled = %v, want absent", v)
+	}
+}
+
+func TestManifestQueryReportedWhenLogged(t *testing.T) {
+	fake := healthyFake()
+	fake.manifest = nil
+	c := New(fake, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{LogInstalledPackages: true})
+	c.now = func() time.Time { return time.Unix(1700000000, 0) }
+	c.Refresh(context.Background())
+
+	if v := querySuccess(t, c, "package_manifest"); v != 0 {
+		t.Errorf("query_success{query=\"package_manifest\"} after a failed manifest query = %v, want 0", v)
 	}
 }
 

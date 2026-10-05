@@ -21,6 +21,17 @@ groups:
           summary: "ubuntu-pro-updates-exporter data on {{ $labels.instance }} is stale"
           description: "No successful refresh for over a day; the metrics no longer reflect the host."
 
+      - alert: UbuntuProQueryFailing
+        expr: ubuntu_pro_updates_exporter_query_success == 0
+        # A failed query reads 0 until the next refresh (12h by default), so
+        # 13h means it failed on two refreshes in a row rather than once.
+        for: 13h
+        labels:
+          severity: warning
+        annotations:
+          summary: "ubuntu-pro-updates-exporter query {{ $labels.query }} is failing on {{ $labels.instance }}"
+          description: "The exporter is up, but its {{ $labels.query }} query to the Ubuntu Pro client failed and the metrics it feeds are missing, so alerts built on them cannot fire. Check the service logs on the host: journalctl -u ubuntu-pro-updates-exporter"
+
       - alert: UbuntuProSecurityUpdatesBacklog
         expr: sum by (instance) (ubuntu_pro_updates_pending{pocket="standard-security"}) > 100
         for: 3d

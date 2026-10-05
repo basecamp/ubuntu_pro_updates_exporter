@@ -26,6 +26,10 @@ series.
   once, under its most actionable status
 - `origin` on `cve_fixes`: `security`, `updates`, `esm-apps`, `esm-infra`
   (the esm pockets need an Ubuntu Pro subscription)
+- `query` on `exporter_query_success`: `package_updates`, `reboot_required`,
+  `installed_summary`, `attached`, `client_version`, `cves` (only while CVE
+  collection is enabled and the client provides the endpoint) and
+  `package_manifest` (only with `--log.installed-packages`)
 
 There is deliberately no total gauge. The sum of `ubuntu_pro_updates_pending`
 equals the `num_updates` field of the API, and a gauge named `*_total` would
@@ -45,4 +49,7 @@ ubuntu_pro_updates_reboot_required{state="yes"} == 1
 
 # Exporter healthy but data stale for a day
 time() - ubuntu_pro_updates_exporter_last_success_timestamp_seconds > 86400
+
+# Hosts where a query failed and its metrics are missing, e.g. reboot_required
+ubuntu_pro_updates_exporter_query_success == 0
 ```

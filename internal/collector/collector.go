@@ -31,6 +31,18 @@ type cveBucket struct {
 	priority, status string
 }
 
+// Query names for ubuntu_pro_updates_exporter_query_success, one per pro api
+// call a refresh makes.
+const (
+	queryPackageUpdates   = "package_updates"
+	queryRebootRequired   = "reboot_required"
+	queryInstalledSummary = "installed_summary"
+	queryAttached         = "attached"
+	queryClientVersion    = "client_version"
+	queryCVEs             = "cves"
+	queryPackageManifest  = "package_manifest"
+)
+
 // toSet turns a list-flag value into a membership set.
 func toSet(values []string) map[string]bool {
 	set := make(map[string]bool, len(values))
@@ -79,6 +91,10 @@ type snapshot struct {
 	cves          *proclient.CVEData
 	attached      *bool
 	clientVersion string
+	// queries records, per query attempted in the last refresh, whether it
+	// succeeded. Queries that were skipped (disabled by an option, or an
+	// endpoint the client does not provide) are absent.
+	queries map[string]bool
 	// ok records whether the last package-updates query succeeded.
 	ok bool
 	// duration is the wall time of the last refresh, in seconds.
@@ -114,6 +130,7 @@ type Collector struct {
 	clientInfo        *prometheus.Desc
 	listSnapshot      *prometheus.Desc
 	lastSuccess       *prometheus.Desc
+	querySuccess      *prometheus.Desc
 	queryDuration     *prometheus.Desc
 
 	// now allows tests to fix the clock.
@@ -191,6 +208,11 @@ func New(client proclient.Client, logger *slog.Logger, opts Options) *Collector 
 			prometheus.BuildFQName(namespace, exporterSubsystem, "last_success_timestamp_seconds"),
 			"Unix time of the last successful package-updates refresh; absent until one succeeds.",
 			nil, nil),
+		querySuccess: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, exporterSubsystem, "query_success"),
+			"Whether each Ubuntu Pro client query succeeded in the last refresh; "+
+				"the metrics of a failed query are omitted. Absent for queries that were skipped.",
+			[]string{"query"}, nil),
 		queryDuration: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, exporterSubsystem, "query_duration_seconds"),
 			"Time spent querying the Ubuntu Pro client during the last refresh.",
@@ -216,24 +238,29 @@ func (c *Collector) Run(ctx context.Context, interval time.Duration) {
 // Refresh queries the pro client once and replaces the cached snapshot.
 // It never runs during a scrape. Everything except the package-updates query
 // is best effort: a failure is logged and its metrics omitted, without taking
-// ubuntu_pro_updates_exporter_up down.
+// ubuntu_pro_updates_exporter_up down; ubuntu_pro_updates_exporter_query_success
+// keeps each failure visible.
 func (c *Collector) Refresh(ctx context.Context) {
 	start := c.now()
+	queries := make(map[string]bool)
 
 	updates, err := c.client.PackageUpdates(ctx)
 	if err != nil {
 		c.logger.Error("querying package updates failed", "err", err)
 	}
+	queries[queryPackageUpdates] = err == nil
 
 	reboot, rebootErr := c.client.RebootRequired(ctx)
 	if rebootErr != nil {
 		c.logger.Warn("querying reboot-required state failed", "err", rebootErr)
 	}
+	queries[queryRebootRequired] = rebootErr == nil
 
 	installed, installedErr := c.client.InstalledSummary(ctx)
 	if installedErr != nil {
 		c.logger.Warn("querying installed-package summary failed", "err", installedErr)
 	}
+	queries[queryInstalledSummary] = installedErr == nil
 
 	var attached *bool
 	if att, attErr := c.client.IsAttached(ctx); attErr != nil {
@@ -241,13 +268,18 @@ func (c *Collector) Refresh(ctx context.Context) {
 	} else {
 		attached = &att
 	}
+	queries[queryAttached] = attached != nil
 
 	clientVersion, versionErr := c.client.ClientVersion(ctx)
 	if versionErr != nil {
 		c.logger.Warn("querying pro client version failed", "err", versionErr)
 	}
+	queries[queryClientVersion] = versionErr == nil
 
-	cves := c.refreshCVEs(ctx)
+	cves, cvesQueried := c.refreshCVEs(ctx)
+	if cvesQueried {
+		queries[queryCVEs] = cves != nil
+	}
 
 	// The manifest is only used for logging; skip the query when disabled.
 	var manifest []proclient.InstalledPackage
@@ -257,6 +289,7 @@ func (c *Collector) Refresh(ctx context.Context) {
 		if manifestErr != nil {
 			c.logger.Warn("querying package manifest failed", "err", manifestErr)
 		}
+		queries[queryPackageManifest] = manifestErr == nil
 	}
 
 	c.mu.Lock()
@@ -268,6 +301,7 @@ func (c *Collector) Refresh(ctx context.Context) {
 	c.snap.cves = cves
 	c.snap.attached = attached
 	c.snap.clientVersion = clientVersion
+	c.snap.queries = queries
 	c.snap.ok = updates != nil
 	if updates != nil {
 		c.snap.lastSuccess = float64(c.now().Unix())
@@ -289,21 +323,24 @@ func (c *Collector) Refresh(ctx context.Context) {
 // provide it (older than 35), CVE collection is disabled for the life of the
 // process after a single warning; restart the exporter once the client is
 // upgraded. Transient failures keep being retried on the normal cadence.
-func (c *Collector) refreshCVEs(ctx context.Context) *proclient.CVEData {
+//
+// queried is false when collection is disabled or the endpoint is
+// unsupported: a skipped query, not a failed one.
+func (c *Collector) refreshCVEs(ctx context.Context) (cves *proclient.CVEData, queried bool) {
 	if !c.opts.CollectCVEs {
-		return nil
+		return nil, false
 	}
 
 	c.mu.Lock()
 	unsupported := c.cveUnsupported
 	c.mu.Unlock()
 	if unsupported {
-		return nil
+		return nil, false
 	}
 
 	cves, err := c.client.CVEs(ctx)
 	if err == nil {
-		return cves
+		return cves, true
 	}
 
 	if proclient.IsUnsupported(err) {
@@ -312,11 +349,11 @@ func (c *Collector) refreshCVEs(ctx context.Context) *proclient.CVEData {
 		c.mu.Unlock()
 		c.logger.Warn("pro client does not provide the CVE endpoint; CVE collection is disabled. Upgrade the client to 35 or newer and restart the exporter",
 			"endpoint", "u.pro.security.cves.v1")
-		return nil
+		return nil, false
 	}
 
 	c.logger.Warn("querying CVEs failed", "err", err)
-	return nil
+	return nil, true
 }
 
 // Describe implements prometheus.Collector.
@@ -332,6 +369,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.clientInfo
 	ch <- c.listSnapshot
 	ch <- c.lastSuccess
+	ch <- c.querySuccess
 	ch <- c.queryDuration
 }
 
@@ -358,6 +396,13 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	ch <- prometheus.MustNewConstMetric(c.queryDuration, prometheus.GaugeValue, snap.duration)
+	for query, ok := range snap.queries {
+		v := 0.0
+		if ok {
+			v = 1
+		}
+		ch <- prometheus.MustNewConstMetric(c.querySuccess, prometheus.GaugeValue, v, query)
+	}
 	if snap.lastSuccess > 0 {
 		ch <- prometheus.MustNewConstMetric(c.lastSuccess, prometheus.GaugeValue, snap.lastSuccess)
 	}
