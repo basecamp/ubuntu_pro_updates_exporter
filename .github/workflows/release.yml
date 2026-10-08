@@ -10,6 +10,8 @@ permissions:
 jobs:
   goreleaser:
     name: Build and draft release
+    # Publishes only after a required reviewer approves (repo Settings > Environments).
+    environment: release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
