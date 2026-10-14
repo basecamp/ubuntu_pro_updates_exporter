@@ -329,8 +329,16 @@ func TestRebootQueryFailureIsVisible(t *testing.T) {
 	if got := testutil.CollectAndCount(c, "ubuntu_pro_updates_reboot_required"); got != 0 {
 		t.Errorf("reboot_required series after a failed query = %d, want 0", got)
 	}
-	if got := testutil.CollectAndCount(c, "ubuntu_pro_updates_pending", "ubuntu_pro_updates_installed_packages", "ubuntu_pro_updates_attached"); got == 0 {
-		t.Error("other detail metrics dropped along with reboot_required")
+	for _, family := range []string{
+		"ubuntu_pro_updates_pending",
+		"ubuntu_pro_updates_installed_packages",
+		"ubuntu_pro_updates_attached",
+		"ubuntu_pro_updates_client_info",
+		"ubuntu_pro_updates_cves",
+	} {
+		if got := testutil.CollectAndCount(c, family); got == 0 {
+			t.Errorf("%s dropped along with reboot_required", family)
+		}
 	}
 	err := testutil.CollectAndCompare(c, strings.NewReader(`
 # HELP ubuntu_pro_updates_exporter_up Whether the last refresh of package updates from the Ubuntu Pro client succeeded.
@@ -353,6 +361,87 @@ ubuntu_pro_updates_exporter_query_success{query="reboot_required"} 0
 	if v := querySuccess(t, c, "reboot_required"); v != 1 {
 		t.Errorf("query_success{query=\"reboot_required\"} after recovery = %v, want 1", v)
 	}
+	if got := testutil.CollectAndCount(c, "ubuntu_pro_updates_reboot_required"); got != len(proclient.RebootStates) {
+		t.Errorf("reboot_required series after recovery = %d, want %d", got, len(proclient.RebootStates))
+	}
+}
+
+// Each best-effort query fails on its own: only its metrics go, only its
+// query_success reads 0, and the exporter stays up.
+func TestSingleQueryFailure(t *testing.T) {
+	cases := []struct {
+		query  string
+		family string
+		fail   func(*fakeClient)
+	}{
+		{"installed_summary", "ubuntu_pro_updates_installed_packages", func(f *fakeClient) { f.installed = nil }},
+		{"attached", "ubuntu_pro_updates_attached", func(f *fakeClient) { f.attached = nil }},
+		{"client_version", "ubuntu_pro_updates_client_info", func(f *fakeClient) { f.version = "" }},
+		{"cves", "ubuntu_pro_updates_cves", func(f *fakeClient) { f.cveData = nil }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			fake := healthyFake()
+			tc.fail(fake)
+			c := newTestCollector(fake)
+			c.Refresh(context.Background())
+
+			if got := testutil.CollectAndCount(c, tc.family); got != 0 {
+				t.Errorf("%s series after a failed query = %d, want 0", tc.family, got)
+			}
+			for _, q := range []string{"package_updates", "reboot_required", "installed_summary", "attached", "client_version", "cves"} {
+				want := 1.0
+				if q == tc.query {
+					want = 0
+				}
+				if v := querySuccess(t, c, q); v != want {
+					t.Errorf("query_success{query=%q} = %v, want %v", q, v, want)
+				}
+			}
+			if got := testutil.CollectAndCount(c, "ubuntu_pro_updates_pending"); got == 0 {
+				t.Error("pending updates dropped along with an unrelated query")
+			}
+		})
+	}
+}
+
+// When only package updates fail, the exporter is down but the other
+// queries still report their own outcome and metrics.
+func TestPackageUpdatesOnlyFailure(t *testing.T) {
+	fake := healthyFake()
+	fake.updates = nil
+	c := newTestCollector(fake)
+	c.Refresh(context.Background())
+
+	if v := querySuccess(t, c, "package_updates"); v != 0 {
+		t.Errorf("query_success{query=\"package_updates\"} = %v, want 0", v)
+	}
+	for _, q := range []string{"reboot_required", "installed_summary", "attached", "client_version", "cves"} {
+		if v := querySuccess(t, c, q); v != 1 {
+			t.Errorf("query_success{query=%q} = %v, want 1", q, v)
+		}
+	}
+	if got := testutil.CollectAndCount(c, "ubuntu_pro_updates_reboot_required"); got == 0 {
+		t.Error("reboot_required dropped along with package updates")
+	}
+}
+
+// Scrapes run concurrently with refreshes; run with -race.
+func TestConcurrentRefreshAndCollect(t *testing.T) {
+	c := newTestCollector(healthyFake())
+	c.Refresh(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			c.Refresh(context.Background())
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		testutil.CollectAndCount(c, "ubuntu_pro_updates_exporter_query_success")
+	}
+	<-done
 }
 
 // querySuccess returns the value of the query_success series for query, or
