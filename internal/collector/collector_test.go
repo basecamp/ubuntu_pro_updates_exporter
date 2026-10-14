@@ -370,24 +370,36 @@ ubuntu_pro_updates_exporter_query_success{query="reboot_required"} 0
 // query_success reads 0, and the exporter stays up.
 func TestSingleQueryFailure(t *testing.T) {
 	cases := []struct {
-		query  string
-		family string
-		fail   func(*fakeClient)
+		query    string
+		families []string
+		fail     func(*fakeClient)
 	}{
-		{"installed_summary", "ubuntu_pro_updates_installed_packages", func(f *fakeClient) { f.installed = nil }},
-		{"attached", "ubuntu_pro_updates_attached", func(f *fakeClient) { f.attached = nil }},
-		{"client_version", "ubuntu_pro_updates_client_info", func(f *fakeClient) { f.version = "" }},
-		{"cves", "ubuntu_pro_updates_cves", func(f *fakeClient) { f.cveData = nil }},
+		{"reboot_required", []string{"ubuntu_pro_updates_reboot_required"}, func(f *fakeClient) { f.reboot = nil }},
+		{"installed_summary", []string{"ubuntu_pro_updates_installed_packages"}, func(f *fakeClient) { f.installed = nil }},
+		{"attached", []string{"ubuntu_pro_updates_attached"}, func(f *fakeClient) { f.attached = nil }},
+		{"client_version", []string{"ubuntu_pro_updates_client_info"}, func(f *fakeClient) { f.version = "" }},
+		{"cves", []string{"ubuntu_pro_updates_cves", "ubuntu_pro_updates_cve_fixes"}, func(f *fakeClient) { f.cveData = nil }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.query, func(t *testing.T) {
+			// Succeed first, so a failure that kept the previous data
+			// instead of dropping it would be caught.
 			fake := healthyFake()
-			tc.fail(fake)
 			c := newTestCollector(fake)
 			c.Refresh(context.Background())
+			for _, family := range tc.families {
+				if got := testutil.CollectAndCount(c, family); got == 0 {
+					t.Fatalf("%s absent after a successful refresh", family)
+				}
+			}
 
-			if got := testutil.CollectAndCount(c, tc.family); got != 0 {
-				t.Errorf("%s series after a failed query = %d, want 0", tc.family, got)
+			tc.fail(fake)
+			c.Refresh(context.Background())
+
+			for _, family := range tc.families {
+				if got := testutil.CollectAndCount(c, family); got != 0 {
+					t.Errorf("%s series after a failed query = %d, want 0", family, got)
+				}
 			}
 			for _, q := range []string{"package_updates", "reboot_required", "installed_summary", "attached", "client_version", "cves"} {
 				want := 1.0

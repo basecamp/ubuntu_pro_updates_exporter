@@ -33,7 +33,7 @@ groups:
           severity: warning
         annotations:
           summary: "ubuntu-pro-updates-exporter query {{ $labels.query }} is failing on {{ $labels.instance }}"
-          description: "The {{ $labels.query }} query to the Ubuntu Pro client keeps failing, so the metrics it feeds are missing and alerts built on them cannot fire. Check the service logs on the host: journalctl -u ubuntu-pro-updates-exporter"
+          description: "The {{ $labels.query }} query to the Ubuntu Pro client keeps failing, so the data it feeds is missing: its metrics (alerts built on them cannot fire), or for package_manifest the installed-packages log. Check the service logs on the host: journalctl -u ubuntu-pro-updates-exporter"
 
       - alert: UbuntuProSecurityUpdatesBacklog
         expr: sum by (instance) (ubuntu_pro_updates_pending{pocket="standard-security"}) > 100
