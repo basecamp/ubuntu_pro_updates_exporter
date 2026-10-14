@@ -61,7 +61,7 @@ cost comes down; every other metric works without it.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `ubuntu_pro_updates_exporter_up` | gauge | | 1 if the last refresh from the pro client succeeded |
+| `ubuntu_pro_updates_exporter_up` | gauge | | 1 if the last refresh of package updates from the pro client succeeded |
 | `ubuntu_pro_updates_pending` | gauge | `pocket`, `status` | Number of pending package updates |
 | `ubuntu_pro_updates_download_bytes` | gauge | `pocket` | Total download size of pending updates |
 | `ubuntu_pro_updates_reboot_required` | gauge | `state` | Reboot required state, encoded as an enum where the active state is 1 |
@@ -71,7 +71,7 @@ cost comes down; every other metric works without it.
 | `ubuntu_pro_updates_attached` | gauge | | 1 if the host is attached to an Ubuntu Pro subscription |
 | `ubuntu_pro_updates_client_info` | gauge | `version` | Installed pro client version |
 | `ubuntu_pro_updates_list_snapshot_timestamp_seconds` | gauge | `list` | Unix time of the newest logged snapshot per on-change list |
-| `ubuntu_pro_updates_exporter_last_success_timestamp_seconds` | gauge | | Unix time of the last successful refresh, absent until one succeeds |
+| `ubuntu_pro_updates_exporter_last_success_timestamp_seconds` | gauge | | Unix time of the last successful package-updates refresh, absent until one succeeds |
 | `ubuntu_pro_updates_exporter_query_success` | gauge | `query` | 1 if that pro client query succeeded in the last refresh, 0 if it failed and its metrics were omitted |
 | `ubuntu_pro_updates_exporter_query_duration_seconds` | gauge | | Time spent querying the pro client during the last refresh |
 | `ubuntu_pro_updates_exporter_build_info` | gauge | `version`, `revision`, `goversion` | Build information |
