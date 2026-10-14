@@ -76,9 +76,11 @@ cost comes down; every other metric works without it.
 | `ubuntu_pro_updates_exporter_query_duration_seconds` | gauge | | Time spent querying the pro client during the last refresh |
 | `ubuntu_pro_updates_exporter_build_info` | gauge | `version`, `revision`, `goversion` | Build information |
 
-Label values are fixed and low cardinality, and every series is always
-exported (at 0 when empty) so alerts never deal with absent series. The
-label values and starter queries are documented in
+Label values are fixed and low cardinality. While a query succeeds, its
+series are exported, at 0 when empty. When it fails, its series are
+absent and `ubuntu_pro_updates_exporter_query_success` for that query is 0,
+so alert on that rather than on absent series. The label values and starter
+queries are documented in
 [docs/metrics.md](docs/metrics.md).
 
 ## Which packages?

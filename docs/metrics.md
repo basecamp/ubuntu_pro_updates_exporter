@@ -3,9 +3,10 @@
 The metric table itself lives in the [README](../README.md#metrics). This
 page documents the label values and some starter queries.
 
-Label values are fixed and low cardinality. All series are always
-exported, at 0 when empty, so alerts never have to deal with absent
-series.
+Label values are fixed and low cardinality. While a query succeeds, its
+series are exported, at 0 when empty. When it fails, its series are
+absent and `ubuntu_pro_updates_exporter_query_success{query="..."}` is 0,
+so an alert on that catches what absent series would hide.
 
 ## Label values
 
