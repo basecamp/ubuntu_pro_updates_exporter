@@ -22,9 +22,7 @@ groups:
           description: "No successful refresh for over a day; the metrics no longer reflect the host."
 
       - alert: UbuntuProQueryFailing
-        # package_updates is left out: its failure sets exporter_up to 0,
-        # which UbuntuProExporterDown already covers.
-        expr: ubuntu_pro_updates_exporter_query_success{query!="package_updates"} == 0
+        expr: ubuntu_pro_updates_exporter_query_success == 0
         # A failed query reads 0 until the next refresh. With the default 12h
         # --pro.refresh-interval, 13h means two refreshes in a row failed
         # rather than one; scale it with the interval.
