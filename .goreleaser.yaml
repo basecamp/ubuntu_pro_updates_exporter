@@ -41,3 +41,6 @@ changelog:
 
 release:
   draft: true
+  # Tags with a semver pre-release part (v0.5.0-rc.1) become GitHub
+  # pre-releases, so publishing the draft never makes them "Latest".
+  prerelease: auto
