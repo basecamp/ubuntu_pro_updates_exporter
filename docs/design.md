@@ -26,6 +26,10 @@ rather than served stale, and `ubuntu_pro_updates_exporter_up` together
 with `ubuntu_pro_updates_exporter_last_success_timestamp_seconds` keeps
 failure and staleness alertable.
 
-The reboot required query is best effort. If it fails while the updates
-query succeeds, `ubuntu_pro_updates_exporter_up` stays 1 and only the
-reboot metric is omitted.
+Every query besides package updates is best effort. If one fails while
+the updates query succeeds, `ubuntu_pro_updates_exporter_up` stays 1 and
+only that query's metrics are omitted;
+`ubuntu_pro_updates_exporter_query_success{query="..."}` drops to 0 so the
+gap is alertable rather than silent. Queries that are skipped (CVE
+collection disabled or unsupported by the client, the manifest when its
+log is off) export no `query_success` series at all.
