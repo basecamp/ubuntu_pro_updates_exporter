@@ -22,8 +22,11 @@ alert on the security updates a host is missing, not just the ones it can
 install.
 
 No subscription is required. The API endpoints used here work on unattached
-hosts, need no root privileges and no network access. They read the local apt
-caches, so results are as fresh as the last `apt update`.
+hosts and need no root privileges, although on Livepatch hosts the
+reboot-required query can fail without them
+([docs/livepatch.md](docs/livepatch.md)). Apart from the CVE
+endpoint, they need no network access: they read the local apt caches, so
+results are as fresh as the last `apt update`.
 
 ## Requirements
 
@@ -160,6 +163,12 @@ The exporter needs no root privileges, so run it as an unprivileged user.
 When running without a home directory (for example with systemd
 `DynamicUser=yes`), point `$HOME` at a writable directory, because the pro
 client writes a per-user log under `$HOME/.cache` when invoked unprivileged.
+
+Hosts with Canonical Livepatch are an exception. There the pro client
+answers the reboot-required query by starting the `canonical-livepatch`
+snap, which can fail from an unprivileged service, and then
+`ubuntu_pro_updates_reboot_required` goes missing.
+[docs/livepatch.md](docs/livepatch.md) explains why.
 
 Port 10052 is the port registered for this exporter in the
 [Prometheus default port allocations](https://github.com/prometheus/prometheus/wiki/Default-port-allocations).
