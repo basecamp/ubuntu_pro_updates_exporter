@@ -19,6 +19,11 @@ start. In the reported setups, snap-confine refused to start it. Under
 necessary permissions`, and as a fixed system user it fails with
 `... is not a snap cgroup for tag snap.canonical-livepatch...`.
 
+Outside a service it works: on a 26.04 Livepatch host, both
+`canonical-livepatch status` and the endpoint succeeded for a regular
+logged-in user without root. What fails is starting the snap from a system
+service, not the lack of root.
+
 The limitation is in the pro client, not in how the exporter queries it.
 The endpoint calls Livepatch twice. The first call, which decides between
 `yes` and `yes-kernel-livepatches-applied`, already tolerates the failure

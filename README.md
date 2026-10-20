@@ -23,7 +23,7 @@ install.
 
 No subscription is required. The API endpoints used here work on unattached
 hosts and need no root privileges, although on Livepatch hosts the
-reboot-required query can fail without them
+reboot-required query can fail from an unprivileged systemd service
 ([docs/livepatch.md](docs/livepatch.md)). Apart from the CVE
 endpoint, they need no network access: they read the local apt caches, so
 results are as fresh as the last `apt update`.
