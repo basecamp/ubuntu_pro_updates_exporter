@@ -4,8 +4,7 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   goreleaser:
@@ -13,6 +12,8 @@ jobs:
     # Publishes only after a required reviewer approves (repo Settings > Environments).
     environment: release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
