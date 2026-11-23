@@ -178,8 +178,8 @@ Port 10052 is the port registered for this exporter in the
 The toolchain is managed with [mise](https://mise.jdx.dev), see `.mise.toml`:
 
 ```sh
-mise install    # Go and goreleaser
-make            # gofmt check, go vet, tests, build
+mise install    # Go and goreleaser; install actionlint and zizmor yourself
+make            # gofmt check, go vet, actionlint, zizmor, tests, build
 make snapshot   # goreleaser build --snapshot --clean
 ```
 

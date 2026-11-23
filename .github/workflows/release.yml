@@ -4,8 +4,7 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   goreleaser:
@@ -13,11 +12,14 @@ jobs:
     # Publishes only after a required reviewer approves (repo Settings > Environments).
     environment: release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # zizmor: ignore[cache-poisoning] -- cache is branch-isolated; fork PRs cannot write to the cache a tag build reads # v5.6.0
         with:
           go-version-file: go.mod
       - name: Run goreleaser
